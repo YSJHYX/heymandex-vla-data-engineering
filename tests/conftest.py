@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -21,6 +22,24 @@ from vla_data.morphology.rm65_sg100 import (
     HAND_SLICE,
     ROBOT_JOINT_NAMES,
 )
+
+
+@pytest.fixture
+def raw_dataset_factory(synthetic_raw_episode):
+    """Clone the tiny RAW fixture under canonical dataset episode IDs."""
+
+    def factory(root: Path, episode_ids: tuple[int, ...]) -> Path:
+        root.mkdir(parents=True, exist_ok=True)
+        source_media = synthetic_raw_episode.with_name(
+            f"{synthetic_raw_episode.stem}_media"
+        )
+        for numeric_id in episode_ids:
+            episode_id = f"episode_{numeric_id:06d}"
+            shutil.copy2(synthetic_raw_episode, root / f"{episode_id}.npz")
+            shutil.copytree(source_media, root / f"{episode_id}_media")
+        return root
+
+    return factory
 
 
 @pytest.fixture
