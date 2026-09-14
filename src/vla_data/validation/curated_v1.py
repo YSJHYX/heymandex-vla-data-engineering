@@ -67,11 +67,28 @@ def validate_curated_episode(
     if metadata.get("schema_version") != CURATED_SCHEMA_VERSION:
         errors.append(f"invalid schema_version: {metadata.get('schema_version')!r}")
 
+    # D10.1: these are provenance/summaries, not authority for a training field.
+    diagnostic_keys = {
+        "language_instruction",
+        "source_schema_name",
+        "source_schema_version",
+        "source_episode_path",
+        "hardware_execution",
+        "training_ready",
+        "dataset_status",
+    }
     missing_metadata = sorted(
-        key for key in METADATA_REQUIRED_KEYS if key not in metadata
+        key
+        for key in METADATA_REQUIRED_KEYS
+        if key not in metadata and key not in diagnostic_keys
     )
     if missing_metadata:
         errors.append(f"missing metadata keys: {missing_metadata}")
+    missing_diagnostics = sorted(diagnostic_keys - metadata.keys())
+    if missing_diagnostics:
+        warnings.append(
+            f"DIAGNOSTIC_WARNING: missing provenance: {missing_diagnostics}"
+        )
 
     joint_names = tuple(metadata.get("joint_names", ()))
     if joint_names != ROBOT_JOINT_NAMES:
@@ -110,12 +127,12 @@ def validate_curated_episode(
 
     if training_ready is True:
         if dataset_status != CURATED_DATASET_STATUS_READY:
-            errors.append("training_ready=True requires CURATED_TRAINING_READY")
+            warnings.append("DIAGNOSTIC_WARNING: training_ready/status disagree")
     elif training_ready is False:
         if dataset_status != CURATED_DATASET_STATUS_NOT_READY:
-            errors.append("training_ready=False requires CURATED_NOT_TRAINING_READY")
+            warnings.append("DIAGNOSTIC_WARNING: training_ready/status disagree")
     else:
-        errors.append("training_ready must be boolean")
+        warnings.append("DIAGNOSTIC_WARNING: training_ready is not boolean")
 
     # ------------------------------------------------------------------
     # Trajectory field contract

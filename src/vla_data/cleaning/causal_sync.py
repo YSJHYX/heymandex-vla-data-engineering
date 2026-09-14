@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+from PIL import Image
 
 from vla_data.io.raw_episode import RawEpisode
 
@@ -92,6 +93,11 @@ def synchronize_episode(raw: RawEpisode) -> CausalSyncResult:
     plus SG100 mode-7 ``hand_feedback_sdk_rad``. Action authority is the
     recorded final effective ``robot_qcmd_17d_rad``, accepted only when it is
     exactly equal to the recorded arm/hand effective component concatenation.
+
+    Component validity certifies recorder acceptance/freshness, not generic
+    device health. Finite held values can be STALE; mode != 7 is
+    SEMANTICALLY_INVALID; timestamp ordering failures are CAUSALLY_INVALID.
+    Diagnostic status/rate/readiness fields never override these authorities.
     """
 
     fields = {key: raw.require(key) for key in REQUIRED_FIELDS}
@@ -113,6 +119,7 @@ def synchronize_episode(raw: RawEpisode) -> CausalSyncResult:
     rejected: list[RejectedCandidate] = []
     reason_counts: Counter[str] = Counter()
     group_counts: Counter[str] = Counter()
+    media_integrity: dict[Path, bool] = {}
 
     # The persisted transition contract keeps next_state_tick_index=k+1.
     # Native POST component samples may originate at different RAW row indices.
@@ -193,6 +200,7 @@ def synchronize_episode(raw: RawEpisode) -> CausalSyncResult:
             media_dir=raw.media_root / "head" / "rgb",
             component="HEAD_CAMERA",
             reasons=reasons,
+            media_integrity=media_integrity,
         )
         wrist_selection = _select_camera(
             timestamps=fields["wrist_camera_host_timestamp_ns"],
@@ -202,6 +210,7 @@ def synchronize_episode(raw: RawEpisode) -> CausalSyncResult:
             media_dir=raw.media_root / "right_wrist" / "rgb",
             component="WRIST_CAMERA",
             reasons=reasons,
+            media_integrity=media_integrity,
         )
 
         if reasons:
@@ -347,6 +356,7 @@ def _select_camera(
     media_dir: Path,
     component: str,
     reasons: list[str],
+    media_integrity: dict[Path, bool],
 ) -> int | None:
     temporal = (timestamps > 0) & (timestamps < boundary)
     valid_mask = np.asarray(valid, dtype=bool) & (frame_indices >= 0)
@@ -360,8 +370,23 @@ def _select_camera(
     tied = candidates[candidate_ts == selected_ts]
     row = int(tied[-1])
     frame_index = int(frame_indices[row])
-    if not (media_dir / f"{frame_index:06d}.jpg").is_file():
+    path = media_dir / f"{frame_index:06d}.jpg"
+    if not path.is_file():
         reasons.append(f"CAMERA_{component}_MEDIA_MISSING")
+        return None
+    # MISSING / SEMANTICALLY_INVALID RGB rejects this reference's transitions,
+    # not unrelated good rows. No fallback to an older image; ordering is frozen.
+    if path not in media_integrity:
+        try:
+            with Image.open(path) as image:
+                image.verify()
+            with Image.open(path) as image:
+                image.convert("RGB").load()
+            media_integrity[path] = True
+        except (OSError, ValueError):
+            media_integrity[path] = False
+    if not media_integrity[path]:
+        reasons.append(f"CAMERA_{component}_DECODE_INVALID")
         return None
     return row, frame_index
 

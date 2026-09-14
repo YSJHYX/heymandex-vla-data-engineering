@@ -75,7 +75,9 @@ def evaluate_curated_episode(
     ]
 
     keep = temporal.keep_mask & visual.keep_mask
-    warnings = list(temporal.warnings) + list(visual.warnings)
+    warnings = (
+        list(d2_validation.warnings) + list(temporal.warnings) + list(visual.warnings)
+    )
     for component in ("arm_state", "hand_state", "arm_action", "hand_action"):
         skipped = int(
             trajectory[f"{component}_velocity_timing"]["nonpositive_dt_pair_count"]
@@ -86,9 +88,15 @@ def evaluate_curated_episode(
                 "with non-positive dt"
             )
     exclusion_reasons: list[str] = []
+    if np.any(visual.keep_mask) and not np.all(visual.keep_mask):
+        warnings.append(
+            "QUALITY_INVALID: required RGB rows excluded; remaining clean rows retained"
+        )
 
     explicit_status = str(episode.metadata.get("expert_training_status", ""))
-    hard_invalid = not d2_validation.passed or not bool(np.all(visual.keep_mask))
+    # QUALITY_INVALID rows stay masked out. One bad image must not veto clean
+    # rows; no metric, threshold, static policy or mask definition is changed.
+    hard_invalid = not d2_validation.passed or not bool(np.any(visual.keep_mask))
     if hard_invalid:
         status = "REJECT"
         exclusion_reasons.extend(d2_validation.errors)
@@ -115,7 +123,7 @@ def evaluate_curated_episode(
         status = "ACCEPT_WITH_WARNING"
         if not np.all(keep):
             exclusion_reasons.append(
-                "configured quality thresholds excluded transitions"
+                "QUALITY_INVALID: RGB integrity or configured quality masks excluded transitions"
             )
     else:
         status = "ACCEPT"

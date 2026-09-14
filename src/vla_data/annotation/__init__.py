@@ -10,16 +10,6 @@ from vla_data.annotation.eligibility import (
     EligibilityError,
     evaluate_eligibility,
 )
-from vla_data.annotation.glm_provider import (
-    GLM_ENDPOINT,
-    GLM_MODEL_ID,
-    PROVIDER_NAME,
-    DeterministicMockVLMProvider,
-    GLM46VFlashProvider,
-    GLMProviderConfig,
-    MissingAPIKeyError,
-    resolve_api_key,
-)
 from vla_data.annotation.keyframes import (
     DEFAULT_MAX_TEMPORAL_POINTS,
     KeyframeSelection,
@@ -114,3 +104,22 @@ __all__ = [
     "validate_annotation",
     "write_annotation",
 ]
+
+
+def __getattr__(name: str):
+    # Preserve the D4 public API without importing a network provider when a
+    # downstream metadata stage imports annotation schema/eligibility helpers.
+    if name in {
+        "GLM_ENDPOINT",
+        "GLM_MODEL_ID",
+        "PROVIDER_NAME",
+        "DeterministicMockVLMProvider",
+        "GLM46VFlashProvider",
+        "GLMProviderConfig",
+        "MissingAPIKeyError",
+        "resolve_api_key",
+    }:
+        from vla_data.annotation import glm_provider
+
+        return getattr(glm_provider, name)
+    raise AttributeError(name)
