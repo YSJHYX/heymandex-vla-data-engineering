@@ -88,6 +88,36 @@ def test_missing_tasks_rejected(hf_dataset_root) -> None:
         validate_dataset_root(hf_dataset_root)
 
 
+def test_missing_or_synthetic_provenance_rejected(hf_dataset_root) -> None:
+    path = hf_dataset_root / "meta" / "source_provenance.jsonl"
+    original = json.loads(path.read_text())
+    path.unlink()
+    with pytest.raises(InvalidDatasetRootError, match="source_provenance"):
+        validate_dataset_root(hf_dataset_root)
+    original["source_dataset_status"] = "SYNTHETIC_TEST_ONLY"
+    path.write_text(json.dumps(original) + "\n")
+    with pytest.raises(InvalidDatasetRootError, match="synthetic"):
+        validate_dataset_root(hf_dataset_root)
+
+
+def test_expert_excluded_provenance_rejected(hf_dataset_root) -> None:
+    path = hf_dataset_root / "meta" / "source_provenance.jsonl"
+    row = json.loads(path.read_text())
+    row["expert_training_status"] = "EXCLUDE_FROM_EXPERT_TRAINING"
+    path.write_text(json.dumps(row) + "\n")
+    with pytest.raises(InvalidDatasetRootError, match="expert-excluded"):
+        validate_dataset_root(hf_dataset_root)
+
+
+def test_missing_camera_feature_rejected(hf_dataset_root) -> None:
+    path = hf_dataset_root / "meta" / "info.json"
+    info = json.loads(path.read_text())
+    del info["features"]["observation.images.wrist"]
+    path.write_text(json.dumps(info))
+    with pytest.raises(InvalidDatasetRootError, match="wrist"):
+        validate_dataset_root(hf_dataset_root)
+
+
 def test_missing_videos_rejected(hf_dataset_root) -> None:
     (
         hf_dataset_root
@@ -104,7 +134,7 @@ def test_manifest_is_deterministic(hf_dataset_root) -> None:
     first = build_canonical_manifest(hf_dataset_root)
     second = build_canonical_manifest(hf_dataset_root)
     assert first == second
-    assert first["file_count"] == 6  # 3 meta + 1 parquet + 2 MP4
+    assert first["file_count"] == 7  # 4 meta + 1 parquet + 2 MP4
     assert first["file_count"] == len(first["files"])
     assert first["total_bytes"] == sum(f["size_bytes"] for f in first["files"])
     paths = {entry["relative_path"] for entry in first["files"]}
@@ -112,6 +142,7 @@ def test_manifest_is_deterministic(hf_dataset_root) -> None:
         "meta/episodes.jsonl",
         "meta/info.json",
         "meta/tasks.jsonl",
+        "meta/source_provenance.jsonl",
         "data/chunk-000/episode_000000.parquet",
         "videos/chunk-000/observation.images.head/episode_000000.mp4",
         "videos/chunk-000/observation.images.wrist/episode_000000.mp4",
@@ -126,9 +157,9 @@ def test_manifest_fingerprint_changes_with_content(hf_dataset_root) -> None:
     assert first["fingerprint"] != second["fingerprint"]
 
 
-def test_readme_carries_test_threshold_marker(hf_dataset_root) -> None:
+def test_readme_carries_private_production_contract(hf_dataset_root) -> None:
     layout = validate_dataset_root(hf_dataset_root)
     readme = build_readme(layout["tasks"], layout["fps"])
-    assert "TEST_THRESHOLD" in readme
-    assert "NOT_PRODUCTION_DATASET" in readme
-    assert "not representative" in readme
+    assert "PRIVATE_TRAINING_DATASET" in readme
+    assert "measured 17D state" in readme
+    assert "exact collection-time task instructions" in readme

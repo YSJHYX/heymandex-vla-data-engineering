@@ -61,6 +61,14 @@ def rgb(path):
         return np.asarray(image, dtype=np.uint8).copy()
 
 
+def task_instruction(run):
+    """Direct exports use task_instruction; legacy semantic manifests remain loadable."""
+
+    value = run.get("task_instruction", run.get("final_instruction"))
+    require(isinstance(value, str) and bool(value.strip()), "task instruction missing")
+    return value
+
+
 def write(request):
     module = library()
     plan, output = request["plan"], Path(request["output_root"])
@@ -93,7 +101,7 @@ def write(request):
                     frame = {
                         "observation.state": state[index].astype(np.float32),
                         "action": action[index].astype(np.float32),
-                        "task": run["final_instruction"],
+                        "task": task_instruction(run),
                     }
                     for key in ("observation.state", "action"):
                         require(
@@ -259,8 +267,8 @@ def validate(request):
             )
             tasks = [dataset.meta.tasks[int(t)] for t in table["task_index"]]
             require(
-                all(t == run["final_instruction"] for t in tasks),
-                "task is not exact manifest instruction",
+                all(t == task_instruction(run) for t in tasks),
+                "task is not exact source instruction",
             )
             with np.load(
                 Path(run["curated_path"]) / "trajectory.npz", allow_pickle=False
@@ -297,7 +305,7 @@ def validate(request):
             for local in sorted({0, count // 2, count - 1}):
                 sample = dataset[start + local]
                 require(
-                    sample["task"] == run["final_instruction"],
+                    sample["task"] == task_instruction(run),
                     "official loader task mismatch",
                 )
                 for key in keys:
@@ -311,7 +319,7 @@ def validate(request):
                     "export_run_id": run["export_run_id"],
                     "split": split,
                     "parquet_rows": count,
-                    "task": run["final_instruction"],
+                    "task": task_instruction(run),
                     "videos": video_evidence,
                     "max_abs_state_cast_error": run["max_abs_state_cast_error"],
                     "max_abs_action_cast_error": run["max_abs_action_cast_error"],
@@ -388,7 +396,7 @@ def openpi_smoke(request):
                     sample["observation.state"].shape == (17,), "physical state not17"
                 )
                 require(
-                    sample["prompt"] == run["final_instruction"],
+                    sample["prompt"] == task_instruction(run),
                     "OpenPI prompt authority mismatch",
                 )
                 padded = transformed[start + local]

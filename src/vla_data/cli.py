@@ -20,7 +20,7 @@ from vla_data.batch.runner import (
     validate_curated_dataset,
 )
 from vla_data.batch.status import DatasetRunResult
-from vla_data.export import export_lerobot
+from vla_data.export import export_lerobot, validate_lerobot_export
 from vla_data.manifest import SplitConfig, build_training_manifest
 from vla_data.manifest.qc import review_episode
 from vla_data.verification import VerificationPolicy, verify_annotations
@@ -186,8 +186,25 @@ def parser() -> argparse.ArgumentParser:
     export = commands.add_parser(
         "export-lerobot", help="local LeRobot v2.1 export with contiguous-run isolation"
     )
-    export.add_argument("--manifest-root", type=Path, required=True)
+    export.add_argument(
+        "--curated-root",
+        type=Path,
+        help="D2 root for the required direct D2+D3 production path",
+    )
+    export.add_argument(
+        "--quality-root",
+        type=Path,
+        help="D3 root for the required direct D2+D3 production path",
+    )
+    export.add_argument(
+        "--manifest-root",
+        type=Path,
+        help="optional legacy D4/D5 semantic-manifest path",
+    )
     export.add_argument("--output-root", type=Path, required=True)
+    export.add_argument("--episode")
+    export.add_argument("--validation-fraction", type=float, default=0.0)
+    export.add_argument("--split-seed", type=int, default=0)
     export.add_argument("--dataset-name", default="vla-local")
     export.add_argument(
         "--lerobot-python",
@@ -196,6 +213,17 @@ def parser() -> argparse.ArgumentParser:
     )
     export.add_argument("--force", action="store_true")
     export.add_argument("--dry-run", action="store_true")
+
+    validate_export = commands.add_parser(
+        "validate-lerobot",
+        help="reconstruct source plan and validate an existing LeRobot export",
+    )
+    validate_export.add_argument("--output-root", type=Path, required=True)
+    validate_export.add_argument(
+        "--lerobot-python",
+        type=Path,
+        help="existing interpreter with audited LeRobot v2.1; never installs packages",
+    )
 
     probe = commands.add_parser(
         "probe-provider",
@@ -220,6 +248,7 @@ def parser() -> argparse.ArgumentParser:
     publish.add_argument(
         "--lerobot-python",
         type=Path,
+        required=True,
         help="interpreter with audited LeRobot for remote official reload",
     )
     publish.add_argument("--revision")
@@ -227,10 +256,9 @@ def parser() -> argparse.ArgumentParser:
     publish.add_argument(
         "--force",
         action="store_true",
-        help="re-upload known same-test data; never deletes unknown remote files",
+        help="re-upload known matching data; never deletes unknown remote files",
     )
     publish.add_argument("--dry-run", action="store_true")
-    publish.add_argument("--skip-remote-validation", action="store_true")
     return root
 
 
@@ -258,6 +286,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = export_lerobot(
                 args.manifest_root,
                 args.output_root,
+                curated_root=args.curated_root,
+                quality_root=args.quality_root,
+                episode=args.episode,
+                validation_fraction=args.validation_fraction,
+                split_seed=args.split_seed,
                 dataset_name=args.dataset_name,
                 lerobot_python=args.lerobot_python,
                 force=args.force,
@@ -265,56 +298,86 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             print(json.dumps(result, indent=2))
             return 0
+        if args.command == "validate-lerobot":
+            import json
+
+            result = validate_lerobot_export(
+                args.output_root,
+                lerobot_python=args.lerobot_python,
+            )
+            print(
+                json.dumps(
+                    {
+                        "passed": result.passed,
+                        "errors": result.errors,
+                        "evidence": result.evidence,
+                    },
+                    indent=2,
+                )
+            )
+            return 0 if result.passed else 1
         if args.command == "publish-hf":
+            import json
+
             from vla_data.publish import publish_dataset, validate_remote
 
+            if args.revision is not None:
+                if args.dry_run or args.force:
+                    raise ValueError(
+                        "--revision is verification-only; omit --dry-run/--force"
+                    )
+                cache = args.cache_dir or Path(
+                    tempfile.mkdtemp(prefix="vla_hf_verify_")
+                )
+                validation = validate_remote(
+                    args.dataset_root,
+                    args.repo_id,
+                    revision=args.revision,
+                    hf_python=str(args.hf_python) if args.hf_python else None,
+                    lerobot_python=str(args.lerobot_python),
+                    cache_dir=cache,
+                )
+                print(json.dumps(validation, indent=2))
+                return 0
             evidence = publish_dataset(
                 args.dataset_root,
                 args.repo_id,
                 hf_python=str(args.hf_python) if args.hf_python else None,
+                lerobot_python=str(args.lerobot_python),
                 dry_run=args.dry_run,
                 force=args.force,
             )
-            print(f"Repo        {evidence['repo_id']} (account {evidence['account']})")
+            print(
+                f"Repo        {evidence['repo_id']} "
+                f"(account {evidence.get('account', 'not queried')})"
+            )
             print(
                 f"Local       {evidence['local_file_count']} files, "
                 f"{evidence['local_bytes']} bytes, "
                 f"fingerprint {evidence['local_fingerprint'][:16]}…"
             )
-            print(
-                f"Remote      {evidence['remote_before']['file_count']} files, "
-                f"private={evidence['remote_before']['private']}"
-            )
+            if "remote_before" in evidence:
+                print(
+                    f"Remote      {evidence['remote_before']['file_count']} files, "
+                    f"private={evidence['remote_before']['private']}"
+                )
             print(f"Action      {evidence['action']}")
             if evidence.get("would_action"):
                 print(f"Would       {evidence['would_action']}")
+            if evidence.get("reason"):
+                print(f"Reason      {evidence['reason']}")
+            if evidence["action"] == "BLOCKED":
+                return 2
             if evidence["action"] == "UPLOADED":
                 print(f"Commit      {evidence['commit_sha']}")
+                print(f"LeRobot tag {evidence['codebase_tag']}")
                 print(
                     f"Uploaded    {evidence['uploaded_file_count']} files, "
                     f"{evidence['uploaded_bytes']} bytes"
                 )
-            if (
-                args.dry_run
-                or evidence["action"] != "UPLOADED"
-                or args.skip_remote_validation
-            ):
+            if args.dry_run or evidence["action"] != "UPLOADED":
                 return 0
-            if not args.lerobot_python:
-                print(
-                    "vla-data: remote official reload requires --lerobot-python "
-                    "(existing interpreter with audited LeRobot v2.1)",
-                    file=sys.stderr,
-                )
-                return 2
-            cache = args.cache_dir
-            if cache is None:
-                base = Path("/data/heymandex_vla_d7_cache")
-                cache = (
-                    base
-                    if base.parent.is_dir()
-                    else Path(tempfile.mkdtemp(prefix="vla_d7_cache_"))
-                )
+            cache = args.cache_dir or Path(tempfile.mkdtemp(prefix="vla_d7_cache_"))
             validation = validate_remote(
                 args.dataset_root,
                 args.repo_id,

@@ -26,6 +26,9 @@ def test_all_cli_help_commands() -> None:
         ("quality", "--help"),
         ("run", "--help"),
         ("annotate", "--help"),
+        ("export-lerobot", "--help"),
+        ("validate-lerobot", "--help"),
+        ("publish-hf", "--help"),
     ):
         result = _run(*arguments)
         assert result.returncode == 0, result.stderr

@@ -90,14 +90,18 @@ def test_corrupt_reference_rejects_only_affected_transition(
     assert CuratedEpisode.load(out).transition_count == 1
 
 
-def test_readiness_summary_is_warning_not_training_authority(curated_v1_episode):
+def test_readiness_summary_is_warning_but_task_instruction_is_required(
+    curated_v1_episode,
+):
     path = curated_v1_episode / "metadata.json"
     m = json.loads(path.read_text())
     m.update(hardware_execution=False, training_ready=False, dataset_status="UNKNOWN")
     del m["language_instruction"]
     path.write_text(json.dumps(m))
     report = validate_curated_episode(CuratedEpisode.load(curated_v1_episode))
-    assert report.passed and report.warnings
+    assert not report.passed
+    assert "language_instruction must be a non-empty string" in report.errors
+    assert report.warnings
 
 
 def test_partial_d3_rgb_failure_preserves_clean_rows(synthetic_raw_episode, tmp_path):

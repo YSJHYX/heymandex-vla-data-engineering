@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import re
 import shutil
 import subprocess
 import tempfile
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 from vla_data.publish.local import (
+    APPROVED_EXPERT_STATUS,
     NON_CANONICAL_REMOTE_FILES,
+    InvalidDatasetRootError,
     build_canonical_manifest,
     build_readme,
     validate_dataset_root,
@@ -22,6 +27,7 @@ from vla_data.publish.remote import HFWorkerError, hf_call
 STATUS_UPLOADED = "UPLOADED"
 STATUS_SKIPPED = "SKIPPED"
 STATUS_DRY_RUN = "DRY_RUN"
+FULL_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
 
 class AuthRequiredError(RuntimeError):
@@ -29,11 +35,19 @@ class AuthRequiredError(RuntimeError):
 
 
 class RemoteNotEmptyError(RuntimeError):
-    """The remote repository holds data that is not this test dataset."""
+    """The remote repository holds files outside the canonical local payload."""
+
+
+class RemotePrivacyError(RuntimeError):
+    """Production training datasets must not be published to a public repo."""
 
 
 class RemoteValidationError(RuntimeError):
     """The remote snapshot does not match the local canonical dataset."""
+
+
+class PublicationEligibilityError(RuntimeError):
+    """The export is valid for integration but not approved for production HF."""
 
 
 def publish_dataset(
@@ -41,13 +55,14 @@ def publish_dataset(
     repo_id: str,
     *,
     hf_python: str | None = None,
+    lerobot_python: str | None = None,
     dry_run: bool = False,
     force: bool = False,
 ) -> dict:
     """Publish a validated D6 LeRobot root to the HF dataset repo root.
 
     Publication only: canonical files are copied byte-for-byte into a staging
-    directory (plus a TEST_THRESHOLD README when the remote has none) and
+    directory (plus a production dataset card when the remote has none) and
     uploaded in a single commit. The D6 dataset itself is never mutated.
     """
 
@@ -55,6 +70,60 @@ def publish_dataset(
     validate_repo_id(repo_id)
     layout = validate_dataset_root(dataset_root)
     manifest = build_canonical_manifest(dataset_root)
+    source_export_fingerprint = _source_export_fingerprint(dataset_root)
+    if lerobot_python:
+        local_reload = _official_reload(
+            local_root=str(Path(dataset_root).resolve()),
+            remote_root=str(Path(dataset_root).resolve()),
+            lerobot_python=lerobot_python,
+            expected_tasks=layout["tasks"],
+        )
+        if not local_reload.get("reload_pass"):
+            raise InvalidDatasetRootError(
+                f"official local LeRobot reload failed: {local_reload.get('errors')}"
+            )
+    else:
+        local_reload = None
+
+    if not layout["publication_approved"]:
+        reason = (
+            "production publication requires explicit "
+            f"expert_training_status={APPROVED_EXPERT_STATUS} on every source run; "
+            f"observed {layout['expert_training_statuses']}"
+        )
+        if not dry_run:
+            raise PublicationEligibilityError(reason)
+        return {
+            "schema_name": "vla_hf_publication",
+            "schema_version": 1,
+            "repo_id": repo_id,
+            "action": "BLOCKED",
+            "would_action": "BLOCKED_EXPERT_APPROVAL",
+            "reason": reason,
+            "local_fingerprint": manifest["fingerprint"],
+            "local_file_count": manifest["file_count"],
+            "local_bytes": manifest["total_bytes"],
+            "local_official_reload": local_reload,
+            "expert_training_statuses": layout["expert_training_statuses"],
+            "wall_time_s": time.monotonic() - started,
+        }
+    if source_export_fingerprint is None:
+        reason = "missing valid source export fingerprint beside the split root"
+        if not dry_run:
+            raise PublicationEligibilityError(reason)
+        return {
+            "schema_name": "vla_hf_publication",
+            "schema_version": 1,
+            "repo_id": repo_id,
+            "action": "BLOCKED",
+            "would_action": "BLOCKED_SOURCE_EXPORT_FINGERPRINT",
+            "reason": reason,
+            "local_fingerprint": manifest["fingerprint"],
+            "local_file_count": manifest["file_count"],
+            "local_bytes": manifest["total_bytes"],
+            "local_official_reload": local_reload,
+            "wall_time_s": time.monotonic() - started,
+        }
 
     state = _authenticated_repo_state(repo_id, hf_python)
     action, would_action = _decide(state, manifest, dry_run=dry_run, force=force)
@@ -68,9 +137,14 @@ def publish_dataset(
         "local_fingerprint": manifest["fingerprint"],
         "local_file_count": manifest["file_count"],
         "local_bytes": manifest["total_bytes"],
+        "source_export_fingerprint": source_export_fingerprint,
+        "timestamp_utc": datetime.now(UTC).isoformat(),
+        "expert_training_statuses": layout["expert_training_statuses"],
+        "local_official_reload": local_reload,
         "remote_before": {
             "private": state["private"],
             "sha": state["sha"],
+            "v2_1_tag_sha": state.get("v2_1_tag_sha"),
             "file_count": len(state["files"]),
         },
         "action": action,
@@ -94,6 +168,7 @@ def publish_dataset(
         **evidence,
         "commit_sha": commit["commit_sha"],
         "commit_url": commit["commit_url"],
+        "codebase_tag": commit["codebase_tag"],
         "uploaded_file_count": manifest["file_count"] + int(readme_needed),
         "uploaded_bytes": manifest["total_bytes"],
         "wall_time_s": time.monotonic() - started,
@@ -113,13 +188,28 @@ def validate_remote(
 
     started = time.monotonic()
     validate_repo_id(repo_id)
+    if not isinstance(revision, str) or not FULL_SHA_PATTERN.fullmatch(revision):
+        raise RemoteValidationError(
+            "remote verification requires an exact 40-character commit SHA"
+        )
     manifest = build_canonical_manifest(dataset_root)
+    cache = Path(cache_dir)
+    if cache.exists() and (not cache.is_dir() or any(cache.iterdir())):
+        raise RemoteValidationError(
+            "fresh download requires an absent or empty cache directory"
+        )
     downloaded = hf_call(
         "download",
         {"repo_id": repo_id, "revision": revision, "cache_dir": str(cache_dir)},
         hf_python,
     )
     snapshot = Path(downloaded["snapshot_path"])
+    if downloaded.get("private") is not True:
+        raise RemoteValidationError("downloaded revision is not confirmed private")
+    if downloaded.get("resolved_sha") != revision:
+        raise RemoteValidationError(
+            "downloaded revision does not match pinned commit SHA"
+        )
 
     mismatches = []
     for entry in manifest["files"]:
@@ -157,7 +247,11 @@ def validate_remote(
         "schema_version": 1,
         "repo_id": repo_id,
         "revision": revision,
+        "resolved_sha": downloaded["resolved_sha"],
+        "private": True,
         "snapshot_path": str(snapshot),
+        "source_export_fingerprint": _source_export_fingerprint(dataset_root),
+        "local_fingerprint": manifest["fingerprint"],
         "canonical_file_mismatches": 0,
         "canonical_file_count": manifest["file_count"],
         "lerobot": lerobot_evidence,
@@ -167,6 +261,21 @@ def validate_remote(
 
 def manifest_tasks(dataset_root: str | Path) -> list[str]:
     return validate_dataset_root(dataset_root)["tasks"]
+
+
+def _source_export_fingerprint(dataset_root: str | Path) -> str | None:
+    path = Path(dataset_root).parent / "export_summary.json"
+    if not path.is_file():
+        return None
+    summary = json.loads(path.read_text())
+    value = summary.get("fingerprint")
+    return (
+        value
+        if isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+        else None
+    )
 
 
 def _authenticated_repo_state(repo_id: str, hf_python: str | None) -> dict:
@@ -179,13 +288,17 @@ def _authenticated_repo_state(repo_id: str, hf_python: str | None) -> dict:
             or "401" in exc.message
         ):
             raise AuthRequiredError(
-                "Hugging Face authentication failed; run: huggingface-cli login"
+                "Hugging Face authentication failed; run: hf auth login"
             ) from exc
         raise
-    state.setdefault("exists", True)
-    state.setdefault("private", True)
-    state.setdefault("sha", None)
-    state.setdefault("files", [])
+    if state.get("exists") is not True:
+        raise RemotePrivacyError(
+            "HF publication requires an existing dataset repository"
+        )
+    if state.get("private") not in {True, False}:
+        raise RemoteValidationError("remote repository visibility is unknown")
+    if not isinstance(state.get("files"), list) or not state.get("sha"):
+        raise RemoteValidationError("remote repository metadata is incomplete")
     return state
 
 
@@ -200,6 +313,14 @@ def _decide(
     state: dict, manifest: dict, *, dry_run: bool, force: bool
 ) -> tuple[str, str]:
     """Return (reported_action, would_action); BLOCKED only stays silent in dry-run."""
+
+    if state.get("private") is not True:
+        if dry_run:
+            return "BLOCKED", "BLOCKED_PUBLIC_REPOSITORY"
+        raise RemotePrivacyError(
+            "HF publication requires an existing private dataset repository; "
+            "refusing to upload to a public repository"
+        )
 
     canonical = {file["relative_path"]: file for file in manifest["files"]}
     unknown = [
@@ -216,7 +337,12 @@ def _decide(
             f"{len(unknown)} unknown remote file(s), first: {unknown[:5]}"
         )
     matches = _remote_matches(state["files"], canonical)
-    would = STATUS_UPLOADED if (force or not matches) else STATUS_SKIPPED
+    tag_matches_head = state.get("v2_1_tag_sha") == state.get("sha")
+    would = (
+        STATUS_UPLOADED
+        if (force or not matches or not tag_matches_head)
+        else STATUS_SKIPPED
+    )
     if dry_run:
         return STATUS_DRY_RUN, would
     return would, would
@@ -237,7 +363,7 @@ def _remote_matches(remote_files: list[dict], canonical: dict[str, dict]) -> boo
 
 
 def _stage(dataset_root, manifest: dict, readme_needed: bool, layout: dict) -> Path:
-    """Copy canonical files (unchanged) plus the TEST_THRESHOLD README."""
+    """Copy canonical files unchanged plus the production dataset card."""
 
     base = Path(tempfile.mkdtemp(prefix="vla_d7_staging_", dir=_staging_parent()))
     root = Path(dataset_root)
@@ -264,6 +390,7 @@ def _staging_parent() -> str | None:
 
 
 _RELOAD_SCRIPT = r"""
+import hashlib
 import json
 import numpy as np
 from pathlib import Path
@@ -291,13 +418,40 @@ try:
         feature = remote.features[key]
         if feature["dtype"] != "float32" or list(feature["shape"]) != [17]:
             fail(f"feature {key} is {feature['dtype']} {feature['shape']}")
+    camera_shapes = {}
+    for key in ("observation.images.head", "observation.images.wrist"):
+        feature = remote.features[key]
+        shape = list(feature["shape"])
+        if feature["dtype"] != "video" or len(shape) != 3 or shape[2] != 3:
+            fail(f"invalid RGB camera feature {key}")
+        if local.features[key] != feature:
+            fail(f"camera feature {key} differs")
+        camera_shapes[key] = shape
     tasks = [
         json.loads(line)["task"]
         for line in Path(remote_root, "meta/tasks.jsonl").read_text().splitlines()
         if line.strip()
     ]
-    if tasks != expected_tasks or "test" in tasks:
+    if tasks != expected_tasks:
         fail(f"remote tasks {tasks}")
+    provenance = [
+        json.loads(line)
+        for line in Path(remote_root, "meta/source_provenance.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    local_provenance = [
+        json.loads(line)
+        for line in Path(local_root, "meta/source_provenance.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    if provenance != local_provenance or len(provenance) != remote.num_episodes:
+        fail("source provenance differs or episode count mismatches")
+    for row in provenance:
+        task = row["task_instruction"]
+        if row["task_instruction_sha256"] != hashlib.sha256(task.encode("utf-8")).hexdigest():
+            fail("source task hash mismatch")
+        if row["source_end_index"] - row["source_start_index"] != row["transition_count"]:
+            fail("source episode range mismatch")
     if remote.num_episodes != local.num_episodes:
         fail(f"episode count {remote.num_episodes} != {local.num_episodes}")
     if remote.num_frames != local.num_frames:
@@ -312,6 +466,10 @@ try:
     action_local = np.stack(local.hf_dataset["action"])
     if state_remote.dtype != np.float32 or action_remote.dtype != np.float32:
         fail("remote arrays are not float32")
+    if state_remote.shape != (remote.num_frames, 17) or action_remote.shape != (remote.num_frames, 17):
+        fail("remote state/action shape mismatch")
+    if lengths != [row["transition_count"] for row in provenance]:
+        fail("source range lengths differ from LeRobot episodes")
     if not np.array_equal(state_remote, state_local):
         fail("state arrays differ between local and remote")
     if not np.array_equal(action_remote, action_local):
@@ -341,6 +499,13 @@ try:
         episode_lengths=lengths,
         fps=remote.fps,
         tasks=tasks,
+        task_hashes=[row["task_instruction_sha256"] for row in provenance],
+        source_ranges=[
+            [row["source_episode_id"], row["source_start_index"], row["source_end_index"]]
+            for row in provenance
+        ],
+        expert_training_statuses=[row.get("expert_training_status") for row in provenance],
+        camera_shapes=camera_shapes,
         state_shape=list(state_remote.shape),
         action_shape=list(action_remote.shape),
         state_action_bitwise_equal=True,
@@ -361,14 +526,18 @@ def _official_reload(
             "expected_tasks": expected_tasks,
         }
     )
-    completed = subprocess.run(
-        [lerobot_python, "-c", _RELOAD_SCRIPT],
-        input=request,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=1800,
-    )
+    with tempfile.TemporaryDirectory(prefix="vla_lerobot_reload_cache_") as cache:
+        environment = os.environ.copy()
+        environment["HF_DATASETS_CACHE"] = cache
+        completed = subprocess.run(
+            [lerobot_python, "-c", _RELOAD_SCRIPT],
+            input=request,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=1800,
+            env=environment,
+        )
     lines = [line for line in completed.stdout.strip().splitlines() if line.strip()]
     if not lines:
         return {

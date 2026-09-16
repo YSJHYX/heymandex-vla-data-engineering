@@ -32,12 +32,29 @@ INFO = {
 @pytest.fixture
 def hf_dataset_root(tmp_path: Path) -> Path:
     root = tmp_path / "dataset"
+    (tmp_path / "export_summary.json").write_text(json.dumps({"fingerprint": "a" * 64}))
     (root / "meta").mkdir(parents=True)
     (root / "meta" / "info.json").write_text(json.dumps(INFO))
     (root / "meta" / "tasks.jsonl").write_text(
         json.dumps({"task_index": 0, "task": "Place the cable on the table."}) + "\n"
     )
     (root / "meta" / "episodes.jsonl").write_text("{}\n")
+    task = "Place the cable on the table."
+    (root / "meta" / "source_provenance.jsonl").write_text(
+        json.dumps(
+            {
+                "source_episode_id": "episode_000000",
+                "source_start_index": 0,
+                "source_end_index": 3,
+                "transition_count": 3,
+                "task_instruction": task,
+                "task_instruction_sha256": hashlib.sha256(task.encode()).hexdigest(),
+                "source_dataset_status": "REAL_DATA",
+                "expert_training_status": "APPROVED_FOR_EXPERT_TRAINING",
+            }
+        )
+        + "\n"
+    )
     data = root / "data" / "chunk-000"
     data.mkdir(parents=True)
     (data / "episode_000000.parquet").write_bytes(b"fake-parquet-bytes-0")

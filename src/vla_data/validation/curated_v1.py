@@ -67,9 +67,9 @@ def validate_curated_episode(
     if metadata.get("schema_version") != CURATED_SCHEMA_VERSION:
         errors.append(f"invalid schema_version: {metadata.get('schema_version')!r}")
 
-    # D10.1: these are provenance/summaries, not authority for a training field.
+    # Historical source summaries remain diagnostic. The collection-time
+    # language_instruction is the exact model-facing task authority.
     diagnostic_keys = {
-        "language_instruction",
         "source_schema_name",
         "source_schema_version",
         "source_episode_path",
@@ -89,6 +89,10 @@ def validate_curated_episode(
         warnings.append(
             f"DIAGNOSTIC_WARNING: missing provenance: {missing_diagnostics}"
         )
+
+    instruction = metadata.get("language_instruction")
+    if not isinstance(instruction, str) or not instruction.strip():
+        errors.append("language_instruction must be a non-empty string")
 
     joint_names = tuple(metadata.get("joint_names", ()))
     if joint_names != ROBOT_JOINT_NAMES:

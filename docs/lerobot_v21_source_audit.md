@@ -1,5 +1,9 @@
 # D6 local source audit (2026-09-12)
 
+> **SUPERSEDED production guidance.** Historical source/API audit. Its LeRobot v2.1 and OpenPI loader evidence remains
+> useful, but its semantic-manifest task policy was superseded by the direct
+> D2+D3 mainline in README. D4/D5 are now optional.
+
 This audit pins local evidence, not latest upstream documentation. Target:
 Native OpenPI pi0.5; no HF operation, normalization-stat calculation or training.
 
@@ -90,13 +94,12 @@ each with official canonical metadata. No invented split column. Every derived
 run inherits source-manifest split. Empty splits have no LeRobot directory and
 are explicitly counted as zero in `export_summary.json`.
 
-## Real source, test policy only
+## Historical source snapshot
 
 Current Curated `episode_000001`: `dataset_hz=30.0`, offsets
 `[0,505,507,901]`, language_instruction `test`; 901 D3 clean transitions.
-Therefore contiguous export lengths are 505, 2, 394. Export task is solely the
-TEST_THRESHOLD manifest instruction, never Curated's `test`. Source physical
-timestamps stay in Curated; export provenance records exact source row ranges.
-
-The production confidence threshold is not frozen. Real D6 output must be
-labeled `TEST_THRESHOLD / NOT_PRODUCTION_DATASET` and is not a final training set.
+Therefore the historical contiguous lengths were 505, 2, 394. Under the current
+mainline, export task is the exact non-empty Curated collection instruction and
+does not come from semantic verification. Source physical timestamps stay in
+Curated; export provenance records exact source row ranges. This snapshot does
+not certify that historical episode as production-eligible.

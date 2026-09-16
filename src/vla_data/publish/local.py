@@ -15,6 +15,8 @@ REPO_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9
 
 # HF-managed files that are not part of the canonical training payload.
 NON_CANONICAL_REMOTE_FILES = frozenset({".gitattributes", "README.md"})
+APPROVED_EXPERT_STATUS = "APPROVED_FOR_EXPERT_TRAINING"
+CAMERA_FEATURES = ("observation.images.head", "observation.images.wrist")
 
 
 class InvalidRepoIdError(ValueError):
@@ -58,6 +60,20 @@ def validate_dataset_root(dataset_root: str | Path) -> dict:
                 f"feature {key} must be float32 [17], got {feature.get('dtype')} "
                 f"{feature.get('shape')}"
             )
+    for key in CAMERA_FEATURES:
+        feature = features.get(key)
+        shape = feature.get("shape") if isinstance(feature, dict) else None
+        if (
+            not isinstance(feature, dict)
+            or feature.get("dtype") != "video"
+            or not isinstance(shape, list)
+            or len(shape) != 3
+            or any(
+                isinstance(d, bool) or not isinstance(d, int) or d <= 0 for d in shape
+            )
+            or shape[2] != 3
+        ):
+            raise InvalidDatasetRootError(f"missing or invalid RGB video feature {key}")
 
     tasks_path = root / METADATA_DIR / "tasks.jsonl"
     if not tasks_path.is_file():
@@ -70,6 +86,57 @@ def validate_dataset_root(dataset_root: str | Path) -> dict:
     if not tasks or not all(isinstance(task, str) and task for task in tasks):
         raise InvalidDatasetRootError("tasks.jsonl must contain at least one task")
 
+    provenance_path = root / METADATA_DIR / "source_provenance.jsonl"
+    if not provenance_path.is_file():
+        raise InvalidDatasetRootError(f"missing {METADATA_DIR}/source_provenance.jsonl")
+    provenance = [
+        json.loads(line)
+        for line in provenance_path.read_text().splitlines()
+        if line.strip()
+    ]
+    if not provenance:
+        raise InvalidDatasetRootError("source provenance must not be empty")
+    required = {
+        "source_episode_id",
+        "source_start_index",
+        "source_end_index",
+        "transition_count",
+        "task_instruction",
+        "task_instruction_sha256",
+        "source_dataset_status",
+    }
+    for row in provenance:
+        if not isinstance(row, dict) or not required <= row.keys():
+            raise InvalidDatasetRootError("source provenance fields are incomplete")
+        task = row["task_instruction"]
+        start, end = row["source_start_index"], row["source_end_index"]
+        if not isinstance(task, str) or not task.strip():
+            raise InvalidDatasetRootError("source task instruction is empty")
+        if (
+            row["task_instruction_sha256"]
+            != hashlib.sha256(task.encode("utf-8")).hexdigest()
+        ):
+            raise InvalidDatasetRootError("source task instruction hash mismatch")
+        if (
+            isinstance(start, bool)
+            or not isinstance(start, int)
+            or isinstance(end, bool)
+            or not isinstance(end, int)
+            or start < 0
+            or end <= start
+            or end - start != row["transition_count"]
+        ):
+            raise InvalidDatasetRootError("invalid source provenance row range")
+        status = row["source_dataset_status"]
+        if not isinstance(status, str) or not status:
+            raise InvalidDatasetRootError("source dataset status is missing")
+        if "SYNTHETIC" in status.upper():
+            raise InvalidDatasetRootError(
+                "synthetic source is forbidden in publication"
+            )
+        if row.get("expert_training_status") == "EXCLUDE_FROM_EXPERT_TRAINING":
+            raise InvalidDatasetRootError("expert-excluded source is forbidden")
+
     parquet_files = sorted(root.glob(f"data/{CANONICAL_PARQUET}"))
     if not parquet_files:
         raise InvalidDatasetRootError("no Parquet episodes under data/")
@@ -78,11 +145,36 @@ def validate_dataset_root(dataset_root: str | Path) -> dict:
         raise InvalidDatasetRootError(
             "every derived episode needs exactly one head and one wrist MP4"
         )
+    if len(provenance) != len(parquet_files):
+        raise InvalidDatasetRootError(
+            "source provenance row count must equal LeRobot episode count"
+        )
+    if {row["task_instruction"] for row in provenance} != set(tasks):
+        raise InvalidDatasetRootError(
+            "source provenance tasks differ from LeRobot tasks"
+        )
+    for episode_index in range(len(parquet_files)):
+        for key in CAMERA_FEATURES:
+            matches = list(
+                root.glob(f"videos/**/{key}/episode_{episode_index:06d}.mp4")
+            )
+            if len(matches) != 1:
+                raise InvalidDatasetRootError(
+                    f"expected one {key} MP4 for episode {episode_index}"
+                )
     return {
         "episodes": len(parquet_files),
         "tasks": tasks,
+        "provenance": provenance,
         "fps": info.get("fps"),
         "info": info,
+        "publication_approved": all(
+            row.get("expert_training_status") == APPROVED_EXPERT_STATUS
+            for row in provenance
+        ),
+        "expert_training_statuses": sorted(
+            {str(row.get("expert_training_status")) for row in provenance}
+        ),
     }
 
 
@@ -128,16 +220,14 @@ def build_canonical_manifest(dataset_root: str | Path) -> dict:
 
 
 def build_readme(tasks: list[str], fps: object) -> str:
-    """TEST_THRESHOLD dataset card; never a training feature."""
+    """Minimal production dataset card; never a training feature."""
 
     return (
         "---\n"
         f"tags:\n- lerobot\n- robotics\nfps: {fps}\n---\n\n"
-        "# HeymanDex VLA Data — Pipeline Test Dataset\n\n"
-        "Status: TEST_THRESHOLD / NOT_PRODUCTION_DATASET\n\n"
-        "Purpose: validate LeRobot v2.1 → Hugging Face → OpenPI data "
-        "compatibility.\n\n"
-        "Current data are pipeline bring-up samples and are not representative "
-        "of production demonstration quality.\n\n"
+        "# HeymanDex RM65B + SG100 VLA Dataset\n\n"
+        "Status: PRIVATE_TRAINING_DATASET\n\n"
+        "Physical storage contract: measured 17D state, effective 17D action, "
+        "head RGB, wrist RGB, and exact collection-time task instructions.\n\n"
         f"Tasks: {tasks}\n"
     )

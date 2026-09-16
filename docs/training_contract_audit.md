@@ -1,5 +1,10 @@
 # D10.1 — Training-contract-only validation audit
 
+> **SUPERSEDED production guidance.** Historical audit snapshot. Since the simplified production mainline, D4/D5 and
+> the semantic manifest are OPTIONAL only. Current production eligibility is
+> D2 valid + D3 clean + exact collection task + non-synthetic source for export;
+> production HF publication additionally requires explicit expert approval. See README.
+
 Audit date: 2026-09-14. Data Engineering `main@90c2c68`; previous commit
 `434a683`. D5–D7 uncommitted files pre-existed and are preserved. No README
 existed at this baseline. No OpenPI, VisionProTeleop, RAW, HF or training writes.
@@ -29,7 +34,8 @@ candidate/artifact cannot advance, not that source bytes are deleted.
 | RAW hardware_execution/training_ready/dataset_status/F_fb status | builder `_metadata`, `_cleaning_report` | Historical provenance | diagnostic → diagnostic |
 | arm_status/controller_error/sender_hz, generic health/rates/debug | not consumed by D2 sync | Not training-field authority | diagnostic/ignored → unchanged |
 | Curated readiness/status consistency and presence | `validation/curated_v1.py` | Historical summary consistency, not proof of state/action | hard → DIAGNOSTIC_WARNING |
-| RAW language/source schema/path provenance presence | same metadata check | Provenance, not final task or physical authority | hard → warning; producer still emits fields |
+| RAW collection language instruction | builder + Curated validator | Exact training/inference task authority | hard non-empty; copied without rewrite |
+| RAW source schema/path provenance presence | same metadata check | Historical source identity | diagnostic warning |
 | Curated schema, field whitelist, widths/lengths, joint order/slices, units/representation | `validation/curated_v1.py` | Unambiguous persisted physical schema; prevent model/SDK payload pollution | hard → hard; no rewrite/salvage of corrupt persisted structures |
 | Curated segment offsets/tick order/native PRE/ACTION/POST relationships | same validator | Temporal identity and no hidden discontinuity | hard → hard |
 | Curated camera role/index/file correspondence; forbidden depth/extra trajectory payload | same validator | Frozen RGB-only storage schema and reference integrity | hard → hard |
@@ -38,10 +44,10 @@ candidate/artifact cannot advance, not that source bytes are deleted.
 | D3 visual anomaly thresholds | `quality/visual.py` | Configured training quality | warning or frozen episode exclusion by config → unchanged |
 | D3 no visual-valid rows / D2 structural validation failure | `quality/evaluator.py` | No valid visual payload / cannot certify persisted contract | hard REJECT → unchanged |
 | D3 explicit expert exclusion/static demonstration/no clean rows | `quality/evaluator.py`, `quality/trajectory.py` | Frozen episode-level expert-data exclusion | hard → unchanged |
-| D4 quality outcome/mask/count; annotation schema/provider completion | `annotation/eligibility.py`, `pipeline.py`, `schema.py` | No model call for ineligible data; valid candidate task | hard → unchanged |
-| D5 quality/source identity/status/confidence/final text | `verification/evaluator.py`, `schema.py`, `review.py` | Language approval authority; low confidence is review, not physical invalidity | hard eligibility / human-review queue → unchanged |
-| Manifest Curated/D3/D4/D5 identities/counts/episode ID, approved text, source split | `manifest/eligibility.py`, `validator.py`, `split.py` | Approved training selection, no leakage | hard → unchanged |
-| D6 FPS/native dimensions/17D/task/run boundaries/split/fingerprint/official reload | `export/plan.py`, `validator.py`, `_worker.py` | Correct storage and source correspondence | hard → unchanged |
+| D4 annotation schema/provider completion | `annotation/eligibility.py`, `pipeline.py`, `schema.py` | Optional semantic research workflow only | hard inside D4; never a production-export gate |
+| D5 confidence/final text | `verification/evaluator.py`, `schema.py`, `review.py` | Optional semantic review workflow only | hard inside D5; never a production-export gate |
+| Legacy semantic manifest identities/split | `manifest/eligibility.py`, `validator.py`, `split.py` | Optional historical export compatibility | hard only when legacy `--manifest-root` mode is selected |
+| Mainline D6 D2/D3/task/real-source/FPS/17D/run/split/reload | `export/plan.py`, `validator.py`, `_worker.py` | Correct storage and source correspondence | hard; no D4/D5 dependency |
 | D7 canonical metadata/features/task/video layout, repo ID, remote conflict/reload | `publish/local.py`, `publisher.py` | Publication integrity; not RAW diagnostic policy | hard → unchanged |
 | Paths/permissions/canonical IDs/unsafe overwrite/worker failure | batch discovery/runners, export/publish | Operational safety, not a data-quality label | operational failure → unchanged |
 

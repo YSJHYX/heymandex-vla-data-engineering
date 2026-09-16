@@ -168,6 +168,7 @@ def test_builder_deduplicates_jpegs_and_validates(
 
     assert report.passed
     assert episode.transition_count == 2
+    assert episode.task_instruction == "synthetic task"
     assert episode.trajectory["head_rgb_frame_index"].tolist() == [2, 2]
     assert episode.trajectory["right_wrist_rgb_frame_index"].tolist() == [2, 2]
     assert episode.media.existing_rgb_indices("head") == (2,)

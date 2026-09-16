@@ -49,7 +49,9 @@ def main() -> int:
             output_root / "observations" / record["episode_id"],
             fps=LIBERO_FPS,
             output_path=(
-                output_root / "inspection_videos" / f"{record['episode_id']}_dual_view.mp4"
+                output_root
+                / "inspection_videos"
+                / f"{record['episode_id']}_dual_view.mp4"
             ),
         )
         videos.append(video)

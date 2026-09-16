@@ -70,28 +70,56 @@ def repo_state(repo_id: str) -> dict:
             if sha:
                 entry["lfs_sha256"] = sha
         files.append(entry)
+    refs = api.list_repo_refs(repo_id=repo_id, repo_type="dataset")
+    version_tag_sha = next(
+        (
+            getattr(tag, "target_commit", None)
+            for tag in refs.tags
+            if getattr(tag, "name", None) == "v2.1"
+        ),
+        None,
+    )
     return {
         "exists": True,
         "private": bool(info.private),
         "sha": info.sha,
         "files": files,
+        "v2_1_tag_sha": version_tag_sha,
     }
 
 
 def upload(repo_id: str, staging_dir: str) -> dict:
     from huggingface_hub import HfApi
 
-    commit = HfApi().upload_folder(
+    api = HfApi()
+    commit = api.upload_folder(
         repo_id=repo_id,
         repo_type="dataset",
         folder_path=staging_dir,
-        commit_message="D7 publish TEST_THRESHOLD dataset (LeRobot v2.1)",
+        commit_message="Publish private RM65B+SG100 dataset (LeRobot v2.1)",
     )
-    return {"commit_sha": commit.oid, "commit_url": commit.commit_url}
+    refs = api.list_repo_refs(repo_id=repo_id, repo_type="dataset")
+    if any(getattr(tag, "name", None) == "v2.1" for tag in refs.tags):
+        api.delete_tag(repo_id, tag="v2.1", repo_type="dataset")
+    api.create_tag(
+        repo_id,
+        tag="v2.1",
+        revision=commit.oid,
+        repo_type="dataset",
+    )
+    return {
+        "commit_sha": commit.oid,
+        "commit_url": commit.commit_url,
+        "codebase_tag": "v2.1",
+    }
 
 
 def download(repo_id: str, revision: str, cache_dir: str) -> dict:
-    from huggingface_hub import snapshot_download
+    from huggingface_hub import HfApi, snapshot_download
+
+    info = HfApi().repo_info(repo_id=repo_id, repo_type="dataset", revision=revision)
+    if info.sha != revision or info.private is not True:
+        raise ValueError("pinned revision or private visibility could not be verified")
 
     path = snapshot_download(
         repo_id=repo_id,
@@ -99,7 +127,7 @@ def download(repo_id: str, revision: str, cache_dir: str) -> dict:
         revision=revision,
         cache_dir=cache_dir,
     )
-    return {"snapshot_path": path}
+    return {"snapshot_path": path, "resolved_sha": info.sha, "private": True}
 
 
 if __name__ == "__main__":

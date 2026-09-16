@@ -180,6 +180,18 @@ def test_runtime_backend_change_forces_rebuild(export_tree, monkeypatch, tmp_pat
             for run in plan["runs"]
         )
     )
+    for split in ("train", "val"):
+        rows = [run for run in plan["runs"] if run["split"] == split]
+        if not rows:
+            continue
+        meta = output / split / "meta"
+        meta.mkdir(parents=True)
+        (meta / "source_provenance.jsonl").write_text(
+            "".join(
+                json.dumps({k: v for k, v in run.items() if k != "images"}) + "\n"
+                for run in rows
+            )
+        )
     calls = []
 
     def fake_worker(mode, *args, **kwargs):

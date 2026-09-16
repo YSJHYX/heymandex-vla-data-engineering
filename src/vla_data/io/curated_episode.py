@@ -109,3 +109,9 @@ class CuratedEpisode:
     @property
     def language_instruction(self) -> str:
         return str(self.metadata["language_instruction"])
+
+    @property
+    def task_instruction(self) -> str:
+        """Exact collection-time instruction under its model-facing name."""
+
+        return self.language_instruction
