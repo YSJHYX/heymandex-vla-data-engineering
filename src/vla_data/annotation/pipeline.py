@@ -56,6 +56,10 @@ class EpisodeAnnotationResult:
     image_count: int
     message: str | None = None
     error_type: str | None = None
+    http_status: int | None = None
+    provider_error_code: str | None = None
+    provider_error_message: str | None = None
+    provider_request_id: str | None = None
     stale: bool = False
     review_status: str | None = None
 
@@ -75,6 +79,10 @@ class EpisodeAnnotationResult:
             "review_status": self.review_status,
             "message": self.message,
             "error_type": self.error_type,
+            "http_status": self.http_status,
+            "provider_error_code": self.provider_error_code,
+            "provider_error_message": self.provider_error_message,
+            "provider_request_id": self.provider_request_id,
         }
         return {key: value for key, value in values.items() if value is not None}
 
@@ -199,6 +207,9 @@ def _publish_artifacts(
 def _failed(
     episode_id: str, quality_outcome: str | None, error: Exception
 ) -> EpisodeAnnotationResult:
+    from vla_data.annotation.provider import ProviderError
+
+    details = error.details() if isinstance(error, ProviderError) else {}
     return EpisodeAnnotationResult(
         episode_id=episode_id,
         status=STATUS_FAILED,
@@ -212,4 +223,8 @@ def _failed(
         image_count=0,
         message=str(error),
         error_type=type(error).__name__,
+        http_status=details.get("http_status"),
+        provider_error_code=details.get("provider_error_code"),
+        provider_error_message=details.get("provider_error_message"),
+        provider_request_id=details.get("request_id"),
     )

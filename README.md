@@ -81,10 +81,10 @@ immutable RAW + external JPG
   ↓ D2 Causal Synchronization (component PRE → ACTION → POST)
 Curated v1 (physical17, segment_offsets, causal RGB refs)
   ↓ D3 Quality (quality_report.json + quality_mask.npy)
-  ↓ D4 GLM Annotation (model-first, quality-eligible only)
-  ↓ D5 Confidence Verification / Human Review
-Manifest / source-episode Split
-  ↓ D6 LeRobot v2.1 (one contiguous clean run = one LeRobot episode)
+  ↓ D4.1 two-pass GLM hierarchical semantics (episode task + temporal subtasks)
+  ↓ D5.1 per-semantic-segment Confidence Verification / Human Review
+Manifest / source-episode Split (then flatten verified semantic training units)
+  ↓ D6 LeRobot v2.1 (one verified semantic segment = one LeRobot episode)
   ↓ D7 Hugging Face publication + independent reload
 OpenPI consumer: repack → physical17 quantile normalization → model transforms
   ↓ Native π0.5 (32D model width, horizon 50)
@@ -247,17 +247,25 @@ val 若非空必须有另行批准的独立 repo，不能再传同一 `$HF_REPO`
 
 ### GLM annotation 是什么、不是什么
 
-当前 D4 annotation 是 **episode-level task instruction**（例如
-`"Place the cable on the table"`）+ confidence + task_type / objects + provenance
-（request id、prompt 版本、keyframes）。**GLM 不做 YOLO bbox 标注**，
-也不输出 segmentation mask；`objects` / `task_type` 主要用于 annotation/QC/
-provenance，π0.5 的 language input 只消费 `final_instruction` / task。
+当前 D4.1 annotation schema v2 是分层语义：`episode_task` 描述完整演示目标，
+`semantic_segments` 用 `[start_curated_index, end_curated_index)` 描述时间局部 subtask，
+`non_training_intervals` 显式说明 clean domain 中不适合作为语义训练单元的区间。
+每段只有一个 canonical instruction，可选 paraphrases。语言描述 **WHAT**，连续
+`action[17]` 承载 **HOW**；禁止把关节、电机、qpos/qcmd 或逐帧位移写成 task。
 
-`model_annotation.confidence` 是 **GLM 基于视觉 keyframes 做 task inference
-的模型自报置信度**，不是 RAW `language_instruction` 与 GLM task 之间的
+合法标注域严格是 `D2 segment ∩ contiguous(D3=True)`。语义段不得跨 D2 物理因果
+边界或 D3 hole；没有最短段长。Pass A 读取全条 clean trajectory 的确定性双视角
+稀疏 keyframes，Pass B 只在候选边界附近补密集双视角 frames。每张图都携带
+Curated index、timestamp、head/wrist role；模型只能选择 prompt 中给出的整数 index。
+v1 episode annotation 仍可显式读取，但不会被静默伪造成 v2 semantic segments。
+
+**GLM 不做 YOLO bbox 标注**，也不输出视觉 segmentation mask。π0.5 的 language
+input 消费已验证 semantic segment 的 `final_instruction` / task；`episode_task` 仅进
+provenance，不表示 OpenPI 已获得 high-level planner。
+
+每个 semantic segment 的 `confidence` 是 **GLM 基于视觉 keyframes 做 task
+inference 的模型自报置信度**，不是 RAW `language_instruction` 与 GLM task 之间的
 相似度，更不是数据质量分数。
-
-低 confidence 不是坏数据，而是 `NEEDS_HUMAN_REVIEW`。查看
 
 低 confidence 不是坏数据，而是 `NEEDS_HUMAN_REVIEW`。查看
 `$VERIFICATION_ROOT/human_review_queue.jsonl`、D4 annotation/keyframes，再做以下三选一操作：
@@ -265,25 +273,173 @@ provenance，π0.5 的 language input 只消费 `final_instruction` / task。
 ```bash
 # 确认 GLM 原文正确
 vla-data review-annotation --verification-root "$VERIFICATION_ROOT" \
-  --episode "$EPISODE" --status HUMAN_VERIFIED --reviewer operator
+  --episode "$EPISODE" --semantic-segment-id "$SEGMENT_ID" \
+  --status HUMAN_VERIFIED --reviewer operator
 
 # 人工修正（示例文字，必须与本 episode 的真实任务对应）
 vla-data review-annotation --verification-root "$VERIFICATION_ROOT" \
-  --episode "$EPISODE" --status HUMAN_CORRECTED \
+  --episode "$EPISODE" --semantic-segment-id "$SEGMENT_ID" \
+  --status HUMAN_CORRECTED \
   --instruction "Place the cable on the table" --reviewer operator
+
+# 也可纠正边界；必须同时提供 exclusive end，且仍在同一 D2/D3 clean domain
+vla-data review-annotation --verification-root "$VERIFICATION_ROOT" \
+  --episode "$EPISODE" --semantic-segment-id "$SEGMENT_ID" \
+  --status HUMAN_CORRECTED --start-curated-index 120 --end-curated-index 205 \
+  --reviewer operator
 
 # 拒绝进入训练
 vla-data review-annotation --verification-root "$VERIFICATION_ROOT" \
-  --episode "$EPISODE" --status REJECTED --reviewer operator
+  --episode "$EPISODE" --semantic-segment-id "$SEGMENT_ID" \
+  --status REJECTED --reviewer operator
 ```
 
 这三条是替代操作，**不要依次全执行**。
+若审核 `episode_task` 而非 semantic segment，省略 `--semantic-segment-id`；
+episode task 与各 segment 的 model/final instruction 独立保存、独立核验。
 人工修改后 **不重跑 D4**：review 已更新 D5 verification → 重建 manifest →
 重导出 LeRobot → 经批准重新发布 HF，记录新 commit SHA。
 旧 manifest/fingerprint 和 task 不再有效；D6 自动失效重建。
 若改变 confidence threshold，重跑全体 `verify-annotations`（避免混合 policy root），
 再走 manifest/D6/D7；**不调用 GLM**。相同 input identity 的人工决定保留；
 源 annotation/quality 变化则必须重新核验。
+
+## 6A. Coding Plan Vision MCP Annotation（D4.2）
+
+标注 provider 现有两种，经 `--provider` 选择：
+
+```text
+standard-glm            个人 BigModel PaaS API（GLM_API_KEY / ZHIPU_API_KEY，默认）
+coding-plan-vision-mcp  团队 Coding Plan Vision MCP（@z_ai/mcp-server，GLM-4.6V 系）
+```
+
+**凭证严格隔离**：`coding-plan-vision-mcp` 只读
+
+```text
+Z_AI_API_KEY   （团队 Coding Plan 身份）
+```
+
+绝不回退到 `GLM_API_KEY` / `ZHIPU_API_KEY`（个人 PaaS 身份）。缺失时报
+`CODING_PLAN_API_KEY_MISSING`。key 只经 subprocess environment 传入 MCP
+进程，从不进 argv / 日志 / JSON。
+
+```bash
+export Z_AI_API_KEY='<TEAM CODING PLAN KEY>'   # 不要写进仓库
+export Z_AI_MODE=ZHIPU
+
+uv run --no-sync vla-data annotate \
+  --curated-root "$CURATED_ROOT" --quality-root "$QUALITY_ROOT" \
+  --output-root "$ANNOTATION_ROOT" --episode "$EPISODE" \
+  --provider coding-plan-vision-mcp --prompt-version v2 --concurrency 1
+```
+
+MCP 经 stdio JSON-RPC 启动一次、initialize、`tools/list`。**runtime
+tools/list 是权威的**：官方网页与已发布 npm 包的工具命名可能不同步——
+provider 在运行时按别名序发现通用视觉工具：
+
+```text
+image_analysis   （当前官方文档名，优先）
+analyze_image    （当前 @z_ai/mcp-server npm runtime 名，同样合法）
+```
+
+video 工具不用于标注（无法替代精确 boundary refinement）。名称匹配后仍
+检查 runtime `inputSchema`（必须能表达 image source + prompt，例如
+`image_source`/`image`/`image_path`/`path` 与 `prompt`/`instruction` 等），
+schema 不符报 `MCP_TOOL_SCHEMA_ERROR`。若所选工具只接受单图，则生成
+**annotation-only storyboard**（每行 head|wrist 同步观测 + margin 标注
+curated_index，时序从上到下）作为传输表示——storyboard **永远不是训练
+数据**，不进入 Curated/D3/LeRobot/HF。原始 RGB 不被修改。
+
+Vision MCP 的后端模型由 Coding Plan 服务管理；pipeline 只在 runtime 响应
+真实暴露模型 ID 时记录 `response_model`，否则为 null
+（`backend_model_not_exposed_by_mcp: true`）——不按文档或包版本推测。
+provenance 记录实际选中的工具名（`mcp_selected_tool`）、选择原因、
+runtime 工具清单与 `serverInfo` 版本。零推理诊断：
+
+```bash
+vla-data probe-provider --provider coding-plan-vision-mcp
+# 只做 initialize + tools/list + 选择与 sanitized schema 摘要，零 tools/call
+```
+
+失败观测使用 `planned/completed/failed_provider_calls` 三计数，不再把
+失败误报为 `expected=0`；MCP 错误分类见
+`MCP_STARTUP_ERROR / MCP_INITIALIZE_ERROR / MCP_TOOL_NOT_FOUND /
+MCP_TOOL_SCHEMA_ERROR / MCP_TOOL_CALL_ERROR / MCP_TIMEOUT /
+MCP_PROCESS_EXITED / MCP_INVALID_RESPONSE / MODEL_OUTPUT_SCHEMA_ERROR`。
+
+### VLA prompt philosophy（prompt family v2）
+
+`--prompt-version v2`（`vla_semantic_coarse_v2` /
+`vla_semantic_boundary_refine_v2`）把模型定位为
+**VLA DATASET TEMPORAL SEMANTIC ANNOTATOR**（非通用 captioner）。核心原则：
+
+```text
+Language labels describe task semantics.
+
+They do not narrate:
+- robot joints,
+- trajectory geometry,
+- low-level controls,
+- or image captions.
+
+STATIC ≠ INVALID —— 保持任务状态的静止（hold/maintain pressure）是合法
+训练语义；只有无任务意图的 idle（PRE/POST_TASK_IDLE 等）才进入
+non_training_intervals。
+```
+
+标注示例：
+
+```text
+GOOD: Grasp the cable / Move the cable above the tray /
+      Align the connector with the socket / Insert the connector into the
+      socket / Hold the component in place
+
+BAD:  The robot seems to move its hand / Rotate wrist 20 degrees /
+      Joint 3 moves forward / Maybe pick it up /
+      The robot successfully performs the task
+```
+
+所有模型输出仍过 Annotation Schema V2 hard-gate + 确定性
+controlled-language 校验（拒绝 caption 前缀 / actuator 叙述 / 臆测词 /
+代词宾语 / markdown），约束形式而不限制任务词汇。Vision MCP 只负责
+annotation；训练数据仍是原始 RGB + physical 17D。
+
+### Embodiment-aware boundary-local annotation（prompt family v3.1）
+
+`--prompt-version v3.1` 使用
+`vla_semantic_coarse_v3_1` / `vla_semantic_boundary_refine_local_v3_1`。
+Pass A 与每个 boundary-local Pass B 都接收同一个、无 episode 标签泄漏的
+`PlatformContext`：RM65B 6-DoF、SG100 11-DoF、external/global D455 head
+camera、robot-mounted D405 wrist camera，以及 real-world VLA teleoperation
+采集模式。相机存储角色、physical 17D 和 D2/D3 合约不变。
+
+v3.1 将边界不确定性和语义区间可用性分离：`AMBIGUOUS` /
+`INSUFFICIENT_VISUAL_EVIDENCE` 默认保留 Pass-A coarse 边界与正语义；只有
+证据明确且 `confidence >= 0.7` 的显式 semantic correction 才有修改权限。
+低置信 correction、静默物体改名和可疑单帧 non-training interval 进入可审计
+诊断，不自动删除正训练区间或补写 planner phase。可选 paraphrase 逐项
+soft-drop，canonical task/segment language 仍 hard-gate。
+
+MCP `tools/call` 对 timeout、overload、network reset 等瞬态 transport failure
+最多重试一次（每个逻辑调用最多两次实际尝试）；auth、quota、schema、语言、
+本地 storyboard/camera 和 invalid-result failure 不重试。summary 分开记录
+`logical_provider_calls`、`actual_tools_call_attempts` 与 `retry_count`，并将
+provider failure 与 semantic zero 区分。
+
+### Canonical-compliant coarse semantics（prompt family v3.3）
+
+`--prompt-version v3.3` 在 v3.2 sparse Pass-A recall calibration 上只增加两项：
+canonical task/segment 必须显式命名被操作物体，不能用未命名 object pronoun；
+若视觉证据显示 manipulation objective 在不同时段发生变化，则拆成不同 coarse
+segments，而不是用 `and` 合并。Validator 仍严格 hard-gate canonical language；
+optional paraphrase 仍逐项 soft-drop。Pass-B、采样密度和 platform context 不变。
+
+每次 provider 成功返回的结构化 payload 会在任何本地 sanitize/validation/merge
+之前原子写入 `episode_XXXXXX/provider_raw/`。同一 input、prompt family/version、
+provider、platform fingerprint、Pass-B mode 和完整 request fingerprint 可在重跑时
+本地 replay；不兼容 artifact 不会复用。summary 分别记录
+`logical_provider_calls`、`actual_provider_calls` 与
+`replayed_provider_responses`。
 
 ## 7. RGB manual review：valid / invalid / all
 
@@ -371,7 +527,7 @@ trajectory-level concatenated**。
 | D4 | quality-ineligible | 不请求 GLM | 否 | 否 |
 | D5 | confidence 低 | **NEEDS_HUMAN_REVIEW，不等于 invalid** | 否 | 人工批准后可 |
 | D5 | HUMAN REJECTED | 不 eligible，保留人工决定 | 否 | 否 |
-| D6 | invalid/gap/stale manifest | 仅导出 eligible contiguous clean runs；不拼接 gap | 否 | 无效部分不能 |
+| D6 | invalid/gap/stale manifest | 仅导出已验证 semantic segments；不拼接 boundary/gap | 否 | 无效部分不能 |
 | 任意 | diagnostic warning | 报告/provenance，不单独改变资格 | 否 | payload 有效则可 |
 
 The pipeline generally does **NOT physically delete invalid RAW data**.
@@ -414,8 +570,10 @@ validity=False 可能是缺失、未接受或过期，不能只凭一个 flag �
 HF dataset repo：**`PPPPPilot/VLADexData`**。历史已验证 commit：
 `b786109f06c985069c57118f5a815eedef684a2e`，仅 TEST_THRESHOLD / NOT_PRODUCTION_DATASET。
 本次没有联网复核 main；不能将历史 SHA 当作已确认当前 main。
-HF episode 000000/000001/000002 是 **source episode_000001** 的三个 derived runs
-505/2/394；**HF episode index ≠ source episode id**。
+历史 HF episode 000000/000001/000002 是 **source episode_000001** 的三个 D2
+physical causal runs 505/2/394；它们不是 semantic segments。D4.1 之后的新 export
+以每个已验证 semantic segment 为一个 LeRobot episode；**HF episode index ≠ source
+episode id，也不等于 D2 segment id**。
 
 Dataset publication parameters（不是训练超参）：`repo_type=dataset`；private 保留既有；
 canonical `meta/`、`data/`、`videos/`；format `codebase_version=v2.1`。
@@ -449,8 +607,10 @@ data = config.LeRobotArmHandDataConfig(
 `action_sequence_keys=("action",)`；真实 loader 从 task_index 表生成 prompt。
 ArmHandInputs 映射 head→base_0_rgb、wrist→right_wrist_0_rgb，未使用 left_wrist mask=False。
 `repack(17D) → ArmHandInputs → quantile Normalize(17D stats) → resize/tokenize/pad(32D)`。
-horizon 在 loader 形成，不存 50 个 action 于每行；LeRobot clamp 在当前 episode 内，
-长度 1/2 也合法，不跨 D2 segment 或 D3 mask hole。
+horizon 在 loader 形成，不存 50 个 action 于每行；一个已验证 semantic segment
+就是一个 LeRobot episode，所以 LeRobot clamp 只能停在该 subtask 末尾，不能跨
+semantic boundary、D2 segment 或 D3 mask hole。OpenPI 仍是
+`semantic subtask prompt → continuous action`，不是 episode_task high-level planner。
 **Production norm stats must be recomputed from production train data**，不能从 val
 或历史 TEST_ONLY 集计算/复用；本轮不计算、不冻结 stats。
 DataConfig 的当前加载路径没有显式 revision 参数；底层 LeRobot 支持 revision。
@@ -506,10 +666,11 @@ Checkpoint 一律放 `/data`（如 `/data/heymandex_vla_d9_smoke/...`），不�
 ### Accepted Source Example：episode_000001（正例）
 
 RAW 共 **3361 rows**；D2 真正可用的是 **901 transitions**，对应三个
-contiguous clean runs **505 / 2 / 394**（D2 offsets `[0, 505, 507, 901]`）。
+physical causal runs **505 / 2 / 394**（D2 offsets `[0, 505, 507, 901]`）。
 这证明：**RAW 存在 invalid intervals ≠ 整个 episode invalid** ——
 transition-level filtering 允许保留有效窗口，极短 run（如 2 帧）同样是
-合法导出单元。该 source 成为 D6–D9 的测试数据集。
+合法的物理因果域；它们不是语义 subtask 数量，也不再自动等同于 D6 导出单元。
+该 source 成为 D6–D9 的历史测试数据集。
 
 ### Rejected Source Example：episode_000002
 

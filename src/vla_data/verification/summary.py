@@ -13,8 +13,17 @@ from vla_data.verification.policy import AutoVerificationAuditConfig, Verificati
 def summarize(
     records: list[dict], policy: VerificationPolicy, audit: AutoVerificationAuditConfig
 ) -> dict:
+    units = [
+        segment
+        for record in records
+        for segment in (
+            record["semantic_segments"]
+            if record.get("schema_version") == 2
+            else [record]
+        )
+    ]
     confidence = [
-        r["model_confidence"] for r in records if r["model_confidence"] is not None
+        u["model_confidence"] for u in units if u.get("model_confidence") is not None
     ]
     percentiles = (0, 10, 25, 50, 75, 90, 95, 100)
     names = ("min", "p10", "p25", "median", "p75", "p90", "p95", "max")
@@ -60,7 +69,12 @@ def summarize(
         "INELIGIBLE",
     ):
         summary[f"{status.lower()}_count"] = sum(
-            r["verification_status"] == status for r in records
+            unit["verification_status"] == status for unit in units
+        )
+        summary[f"episode_task_{status.lower()}_count"] = sum(
+            record.get("schema_version") == 2
+            and record["episode_task"]["verification_status"] == status
+            for record in records
         )
     auto = sorted(
         [
@@ -89,17 +103,47 @@ def publish_index(
     import os
     import tempfile
 
-    queue = [
-        {
-            "episode_id": r["episode_id"],
-            "model_instruction": r["model_instruction"],
-            "confidence": r["model_confidence"],
-            "annotation_path": r["annotation_path"],
-            "keyframes_path": r["keyframes_path"],
-        }
-        for r in records
-        if r["verification_status"] == "NEEDS_HUMAN_REVIEW"
-    ]
+    queue = []
+    for record in records:
+        if record.get("schema_version") == 2:
+            task = record["episode_task"]
+            if task["verification_status"] == "NEEDS_HUMAN_REVIEW":
+                queue.append(
+                    {
+                        "episode_id": record["episode_id"],
+                        "review_target": "episode_task",
+                        "semantic_segment_id": None,
+                        "model_instruction": task["model_instruction"],
+                        "confidence": task["model_confidence"],
+                        "annotation_path": record["annotation_path"],
+                        "keyframes_path": record["keyframes_path"],
+                    }
+                )
+            for segment in record["semantic_segments"]:
+                if segment["verification_status"] == "NEEDS_HUMAN_REVIEW":
+                    queue.append(
+                        {
+                            "episode_id": record["episode_id"],
+                            "review_target": "semantic_segment",
+                            "semantic_segment_id": segment["semantic_segment_id"],
+                            "model_instruction": segment["model_instruction"],
+                            "confidence": segment["model_confidence"],
+                            "start_curated_index": segment["model_start_curated_index"],
+                            "end_curated_index": segment["model_end_curated_index"],
+                            "annotation_path": record["annotation_path"],
+                            "keyframes_path": record["keyframes_path"],
+                        }
+                    )
+        elif record["verification_status"] == "NEEDS_HUMAN_REVIEW":
+            queue.append(
+                {
+                    "episode_id": record["episode_id"],
+                    "model_instruction": record["model_instruction"],
+                    "confidence": record["model_confidence"],
+                    "annotation_path": record["annotation_path"],
+                    "keyframes_path": record["keyframes_path"],
+                }
+            )
     root.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
         mode="w", dir=root, delete=False, encoding="utf-8"

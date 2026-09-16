@@ -123,7 +123,8 @@ def test_official_http_contract_url_model_headers_thinking(jpg, tmp_path) -> Non
     assert request.headers["Content-Type"] == "application/json"
 
     payload = json.loads(request.body)
-    assert payload["model"] == GLM_MODEL_ID == "glm-4.6v-flash"
+    assert payload["model"] == GLM_MODEL_ID
+    assert GLM_MODEL_ID.startswith("glm-4.6v") and GLM_MODEL_ID == GLM_MODEL_ID.strip()
     assert payload["thinking"] == {"type": "enabled"}
     assert "response_format" not in payload
     message = payload["messages"][0]
@@ -233,7 +234,8 @@ def test_empty_response_content_is_classified(jpg, tmp_path) -> None:
 def test_client_error_is_not_retried(jpg, tmp_path) -> None:
     transport = FakeTransport([(401, '{"error": "bad key"}')] * 3)
     provider = _provider(transport, max_attempts=3)
-    with pytest.raises(ProviderError, match="HTTP_CLIENT_ERROR"):
+    # 401 is now classified precisely as HTTP_AUTH (still non-retryable).
+    with pytest.raises(ProviderError, match="HTTP_AUTH"):
         provider.annotate(_request(tmp_path, jpg))
     assert len(transport.requests) == 1  # 4xx burns no retry budget
 

@@ -146,7 +146,8 @@ vla-data annotate \
 Options:
 
 - `--episode episode_000001` — single-episode mode
-- `--force` — re-annotate even when a valid matching annotation exists
+- `--force` — reprocess even when a valid matching annotation exists; an exact
+  compatible `provider_raw` response may be replayed without a network call
 - `--dry-run` — report `WOULD_PROCESS` / `WOULD_SKIP` / `INELIGIBLE` per
   episode without any provider call (works without an API key)
 - `--concurrency N` — bounded provider concurrency; the default `1` sends one
@@ -156,22 +157,39 @@ Options:
   count — a 12-image request (6 head+wrist pairs, ~5.1k prompt tokens) was
   accepted once the window passed. Keep concurrency at 1 for large batches and
   expect bounded-retry `FAILED` episodes to succeed on a later re-run.
-- `--max-temporal-points N` — keyframes per request (default 6 head+wrist
-  pairs selected deterministically from clean transitions)
+- `--max-temporal-points N` — Pass A keyframes (default 6 head+wrist pairs,
+  selected deterministically across every D2/D3 clean domain)
+- `--prompt-version v3.1` — embodiment-aware coarse semantics plus one-transition
+  boundary-local refinement; renders the same platform context into both passes
+- `--prompt-version v3.3` — retains v3.2 sparse recall and boundary-local behavior,
+  while requiring explicit object nouns in canonical instructions and separating
+  temporally distinct manipulation objectives
 
 Behavior:
 
-- Each annotation writes `annotations/<episode>/annotation.json` (schema
-  `vla_episode_annotation` v1, review state `AUTO_LABELED`) plus
-  `keyframes.json` provenance. Curated and RAW inputs are never modified.
+- Pass A infers the episode task and coarse semantic segments. With prompt v3.1,
+  Pass B remains one independent provider call and one storyboard per candidate
+  transition, refining only that local `[start,end)` boundary. The implementation
+  writes `vla_episode_annotation` v2 plus `keyframes.json`; Curated and RAW inputs
+  are never modified.
+- The legal domain is the intersection of each D2 segment with contiguous D3
+  true runs. Model boundaries must be exact provided Curated indices. Segments
+  plus explicit non-training intervals classify every clean domain without
+  overlap; no minimum segment length is imposed.
 - Resume: a valid annotation whose provider, model, and prompt version match
   the current run is `SKIPPED` with no new API spend. Invalid, corrupt, or
   version-mismatched annotations are re-annotated and flagged `stale` rather
   than silently skipped.
-- One episode's provider failure (network, rate limit after bounded retries,
-  invalid model output) fails only that episode; the batch continues and the
-  command exits `1`. Retries are bounded (default 3 attempts, exponential
-  backoff); 4xx configuration/auth errors are not retried.
+- Successful provider responses are atomically persisted under
+  `episode_XXXXXX/provider_raw/` before local language/schema validation. Replay
+  requires exact input, request, prompt, provider, platform-context, and Pass-B
+  mode compatibility; replay increments `replayed_provider_responses`, not
+  `actual_provider_calls`.
+- One episode's provider failure fails only that episode; the batch continues and
+  the command exits `1`. Coding Plan Vision MCP retries a transient timeout,
+  overload, network reset, or retryable transport failure at most once (two
+  actual attempts per logical call). Auth, quota, schema, controlled-language,
+  local storyboard/camera, and invalid-result failures are not retried.
 - A dataset summary lands at `annotations/dataset_annotation_summary.json`
   with eligibility counts, review-state counts, mean confidence, invalid
   response count, and retry count.
@@ -182,8 +200,8 @@ Behavior:
 
 ## Confidence-gated verification and training manifests (D5.1)
 
-D4 model annotations remain immutable, including their `AUTO_LABELED` state.
-D5.1 is a separate authority: after D3 quality eligibility, `confidence >= N`
+D4 model annotations remain immutable. D5.1 is a separate authority: for every
+semantic segment after D3 quality eligibility, `confidence >= N`
 (including equality) produces `AUTO_VERIFIED`; `confidence < N` produces
 `NEEDS_HUMAN_REVIEW`. Comparison uses the recorded confidence without rounding.
 `AUTO_VERIFIED` means machine-policy verified, not human verified.
@@ -205,7 +223,7 @@ even at confidence 1.0. Missing or corrupt per-episode artifacts become explicit
 `INELIGIBLE` records. Missing roots/threshold and mixed policies are global errors.
 
 Outputs are `episode_XXXXXX/verification.json`, `human_review_queue.jsonl`, and
-`dataset_verification_summary.json`. Verification v1 stores policy, source paths
+`dataset_verification_summary.json`. Verification v2 stores policy, source paths
 and hashes, model confidence/instruction, status/source, human review, resolved
 final instruction and fingerprint. Queue contains only `NEEDS_HUMAN_REVIEW`,
 with instruction, confidence, annotation path and keyframes path; no image copy
@@ -218,16 +236,20 @@ A human may verify the original text, correct it, or reject the verification:
 
 ```bash
 vla-data review-annotation --verification-root VERIFICATION \
-  --episode episode_000001 --status HUMAN_VERIFIED --reviewer REVIEWER
+  --episode episode_000001 --semantic-segment-id SEGMENT \
+  --status HUMAN_VERIFIED --reviewer REVIEWER
 
 vla-data review-annotation --verification-root VERIFICATION \
-  --episode episode_000001 --status HUMAN_CORRECTED --instruction "REVIEWED TEXT"
+  --episode episode_000001 --semantic-segment-id SEGMENT \
+  --status HUMAN_CORRECTED --instruction "REVIEWED TEXT"
 
 vla-data review-annotation --verification-root VERIFICATION \
-  --episode episode_000001 --status REJECTED
+  --episode episode_000001 --semantic-segment-id SEGMENT --status REJECTED
 ```
 
 These commands modify verification and refresh its queue/summary, never D4.
+Omit `--semantic-segment-id` to review the independently stored episode task;
+boundary flags apply only to a semantic segment.
 `HUMAN_VERIFIED` resolves to the original model instruction; `HUMAN_CORRECTED`
 requires `--instruction` and preserves its exact text, including whitespace;
 `REJECTED` resolves to null. Invalid/self transitions are rejected. Optional
@@ -356,11 +378,12 @@ cache. Remove `--dry-run` to write. If no interpreter is supplied the current
 Python is used; a missing/incompatible LeRobot dependency yields an actionable
 error explaining `--lerobot-python`, never an automatic installation.
 
-Each LeRobot episode is exactly one nonempty contiguous clean run inside one
-D2 segment. D3 mask holes and D2 boundaries both split episodes. Source-manifest
-train/val assignment is inherited by every derived run; deterministic IDs use
-`episode_XXXXXX__segment_XXX__run_XXX`. No minimum length is invented: the audited
-loader clamps horizons to the current episode and provides padding masks.
+For v2 hierarchical annotations, each verified semantic segment is exactly one
+LeRobot episode. D3 holes and D2 boundaries cannot be crossed. A split is first
+assigned once to the source episode, then inherited by all of its semantic
+training units. No minimum length is invented: the audited loader clamps horizons
+to the semantic episode boundary and provides padding masks. Legacy v1 manifests
+remain readable and retain their historical contiguous-clean-run export behavior.
 
 Outputs:
 

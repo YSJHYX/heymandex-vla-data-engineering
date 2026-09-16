@@ -18,8 +18,12 @@ from dataclasses import dataclass, field
 from uuid import uuid4
 
 from vla_data.annotation.provider import (
-    ERROR_CLIENT_ERROR,
     ERROR_EMPTY_RESPONSE,
+    ERROR_HTTP_AUTH,
+    ERROR_HTTP_OTHER,
+    ERROR_HTTP_OVERLOAD,
+    ERROR_HTTP_PERMISSION,
+    ERROR_HTTP_QUOTA,
     ERROR_INVALID_JSON,
     ERROR_INVALID_SCHEMA,
     ERROR_NETWORK,
@@ -30,13 +34,39 @@ from vla_data.annotation.provider import (
     ImageItem,
     ModelAnnotation,
     ProviderError,
+    StructuredModelResponse,
     TextItem,
 )
 from vla_data.annotation.schema import AnnotationSchemaError, validate_model_payload
 
 PROVIDER_NAME = "zhipu_bigmodel"
-GLM_MODEL_ID = "glm-4.6v-flash"  # API model id; never pad with whitespace.
+GLM_MODEL_ID = "glm-4.6v-flashx"  # API model id; never pad with whitespace.
 GLM_ENDPOINT = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+
+# Zhipu business error codes (bigmodel open platform error-code table).
+ZHIPU_CODE_MAP: dict[str, str] = {
+    "1000": ERROR_HTTP_AUTH,  # authentication / token invalid
+    "1001": ERROR_HTTP_AUTH,
+    "1113": ERROR_HTTP_QUOTA,  # account balance insufficient (billing)
+    "1302": ERROR_RATE_LIMIT,  # user-level rate limit
+    "1305": ERROR_HTTP_OVERLOAD,  # provider-side service overload
+    "1308": ERROR_HTTP_QUOTA,  # API quota exhausted / resets later
+}
+# 1309+ subscription/quota/permission band (1309/1310/1311/...).
+ZHIPU_QUOTA_BAND = (1309, 1399)
+
+# Response headers safe to keep for rate-limit debugging. Never a full dump.
+SAFE_RESPONSE_HEADERS = (
+    "retry-after",
+    "request-id",
+    "x-request-id",
+    "rate-limit-limit",
+    "rate-limit-remaining",
+    "rate-limit-reset",
+    "x-ratelimit-limit",
+    "x-ratelimit-remaining",
+    "x-ratelimit-reset",
+)
 
 
 class MissingAPIKeyError(RuntimeError):
@@ -80,6 +110,7 @@ class HTTPRequest:
 class HTTPResponse:
     status: int
     body: str
+    headers: dict[str, str] = field(default_factory=dict)
 
 
 def urllib_transport(request: HTTPRequest, timeout_s: float) -> HTTPResponse:
@@ -93,9 +124,108 @@ def urllib_transport(request: HTTPRequest, timeout_s: float) -> HTTPResponse:
     )
     try:
         with urllib.request.urlopen(outbound, timeout=timeout_s) as response:
-            return HTTPResponse(response.status, response.read().decode("utf-8"))
+            return HTTPResponse(
+                response.status,
+                response.read().decode("utf-8"),
+                dict(response.headers.items()),
+            )
     except urllib.error.HTTPError as exc:  # 4xx/5xx bodies are useful diagnostics
-        return HTTPResponse(exc.code, exc.read().decode("utf-8", errors="replace"))
+        return HTTPResponse(
+            exc.code,
+            exc.read().decode("utf-8", errors="replace"),
+            dict(exc.headers.items()) if exc.headers is not None else {},
+        )
+
+
+def classify_http_error(status: int, provider_code: str | None) -> str:
+    """Classify a non-2xx response using Zhipu business codes before status.
+
+    A 429 is NOT assumed to be a plain rate limit: Zhipu reports billing,
+    quota, and overload conditions over 429 as well.
+    """
+
+    if provider_code is not None:
+        mapped = ZHIPU_CODE_MAP.get(provider_code)
+        if mapped is not None:
+            return mapped
+        if provider_code.isdigit() and (
+            ZHIPU_QUOTA_BAND[0] <= int(provider_code) <= ZHIPU_QUOTA_BAND[1]
+        ):
+            return ERROR_HTTP_QUOTA  # subscription/quota/permission band
+    if status in (401,):
+        return ERROR_HTTP_AUTH
+    if status in (403,):
+        return ERROR_HTTP_PERMISSION
+    if status == 429:
+        return ERROR_RATE_LIMIT
+    if status >= 500:
+        return ERROR_SERVER
+    return ERROR_HTTP_OTHER
+
+
+def _parse_error_body(body: str) -> tuple[str | None, str | None]:
+    """Extract (provider_error_code, provider_error_message) from the body.
+
+    Tolerates the documented ``{"error": {"code", "message"}}`` shape, an
+    ``{"error": "text"}`` shape, flat ``code``/``message`` keys, and malformed
+    bodies — never raising on garbage.
+    """
+
+    try:
+        document = json.loads(body)
+    except ValueError:
+        return None, (body.strip()[:200] or None)
+    if not isinstance(document, dict):
+        return None, (body.strip()[:200] or None)
+    error = document.get("error")
+    if isinstance(error, dict):
+        code = error.get("code")
+        message = error.get("message")
+        return (
+            str(code) if code is not None else None,
+            str(message) if message is not None else None,
+        )
+    if isinstance(error, str):
+        return None, (error[:200] or None)
+    code = document.get("code")
+    message = document.get("message")
+    return (
+        str(code) if code is not None else None,
+        str(message) if message is not None else None,
+    )
+
+
+def _safe_headers(headers: dict[str, str]) -> dict[str, str]:
+    """Whitelist rate-limit/request-id headers; drop everything else."""
+
+    return {
+        name.lower(): str(headers[name])
+        for name in headers
+        if name.lower() in SAFE_RESPONSE_HEADERS
+    }
+
+
+def _http_error(response: HTTPResponse) -> ProviderError:
+    """Build a fully-detailed ProviderError for a non-2xx GLM response."""
+
+    code, provider_message = _parse_error_body(response.body)
+    category = classify_http_error(response.status, code)
+    lowered = {name.lower(): value for name, value in response.headers.items()}
+    request_id = lowered.get("request-id") or lowered.get("x-request-id")
+    text = f"HTTP {response.status}"
+    if code is not None:
+        text += f" provider code {code}"
+    if provider_message is not None:
+        text += f": {provider_message}"
+    return ProviderError(
+        category,
+        text,
+        http_status=response.status,
+        provider_error_code=code,
+        provider_error_message=provider_message,
+        request_id=request_id,
+        http_headers=_safe_headers(response.headers) or None,
+    )
 
 
 class GLM46VFlashProvider:
@@ -142,6 +272,75 @@ class GLM46VFlashProvider:
         raise ProviderError(
             last_error.category,
             f"gave up after {attempts} attempt(s); last error: {last_error.message}",
+            http_status=last_error.http_status,
+            provider_error_code=last_error.provider_error_code,
+            provider_error_message=last_error.provider_error_message,
+            request_id=last_error.request_id,
+            http_headers=last_error.http_headers,
+        )
+
+    def infer_json(self, request: AnnotationRequest) -> StructuredModelResponse:
+        """Run the same bounded GLM transport but retain a generic JSON object."""
+
+        key = (
+            self._api_key
+            if self._api_key is not None
+            else resolve_api_key(self.config.environment)
+        )
+        payload = self._build_payload(request)
+        attempts = 0
+        last_error: ProviderError | None = None
+        while attempts < self.config.max_attempts:
+            attempts += 1
+            try:
+                response = self._post(payload, key)
+                content, document, choice = self._extract_content(response)
+                parsed = self._parse_payload(content)
+                usage_raw = document.get("usage")
+                usage = None
+                if isinstance(usage_raw, dict):
+                    usage = {
+                        name: int(usage_raw[name])
+                        for name in (
+                            "prompt_tokens",
+                            "completion_tokens",
+                            "total_tokens",
+                        )
+                        if isinstance(usage_raw.get(name), int)
+                    }
+                return StructuredModelResponse(
+                    provider=PROVIDER_NAME,
+                    model=self.model,
+                    prompt_version=request.prompt_version,
+                    payload=parsed,
+                    request_id=(
+                        str(document["id"])
+                        if isinstance(document.get("id"), str)
+                        else None
+                    ),
+                    attempt_count=attempts,
+                    finish_reason=(
+                        str(choice["finish_reason"])
+                        if isinstance(choice.get("finish_reason"), str)
+                        else None
+                    ),
+                    usage=usage or None,
+                )
+            except ProviderError as error:
+                last_error = error
+                if error.category in NON_RETRYABLE_ERRORS:
+                    break
+                if attempts < self.config.max_attempts:
+                    self.config.sleeper(self.config.backoff_base_s**attempts)
+        assert last_error is not None
+        raise ProviderError(
+            last_error.category,
+            f"gave up after {attempts} attempt(s); last error: {last_error.message}",
+            http_status=last_error.http_status,
+            provider_error_code=last_error.provider_error_code,
+            provider_error_message=last_error.provider_error_message,
+            request_id=last_error.request_id,
+            http_headers=last_error.http_headers,
         )
 
     # ------------------------------------------------------------------ HTTP
@@ -199,15 +398,8 @@ class GLM46VFlashProvider:
     def _extract_content(
         self, response: HTTPResponse
     ) -> tuple[str, dict[str, object], dict[str, object]]:
-        if response.status == 429:
-            raise ProviderError(ERROR_RATE_LIMIT, "HTTP 429 rate limited")
-        if 500 <= response.status < 600:
-            raise ProviderError(ERROR_SERVER, f"HTTP {response.status} server error")
-        if 400 <= response.status < 600:
-            raise ProviderError(
-                ERROR_CLIENT_ERROR,
-                f"HTTP {response.status} client/config error",
-            )
+        if not 200 <= response.status < 300:
+            raise _http_error(response)
         try:
             document = json.loads(response.body)
         except ValueError as exc:
@@ -340,4 +532,30 @@ class DeterministicMockVLMProvider:
             finish_reason="stop",
             usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
             raw_response_text=None,
+        )
+
+
+class DeterministicStructuredMockProvider:
+    """Ordered in-memory responses for hierarchical annotation tests."""
+
+    provider_name = "deterministic_mock"
+    model = "mock-vlm-structured-1"
+
+    def __init__(self, *payloads: dict[str, object]) -> None:
+        self.payloads = list(payloads)
+        self.calls: list[AnnotationRequest] = []
+
+    def infer_json(self, request: AnnotationRequest) -> StructuredModelResponse:
+        self.calls.append(request)
+        if not self.payloads:
+            raise ProviderError(ERROR_EMPTY_RESPONSE, "mock response queue exhausted")
+        return StructuredModelResponse(
+            provider=self.provider_name,
+            model=self.model,
+            prompt_version=request.prompt_version,
+            payload=self.payloads.pop(0),
+            request_id=f"mock-{len(self.calls)}",
+            attempt_count=1,
+            finish_reason="stop",
+            usage=None,
         )

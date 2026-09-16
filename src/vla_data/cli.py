@@ -8,10 +8,8 @@ import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 
-from vla_data.annotation.batch import (
-    AnnotationConfigurationError,
-    annotate_dataset,
-)
+from vla_data.annotation.batch import AnnotationConfigurationError
+from vla_data.annotation.hierarchical import annotate_hierarchical_dataset
 from vla_data.annotation.keyframes import DEFAULT_MAX_TEMPORAL_POINTS
 from vla_data.batch.discovery import DiscoveryError
 from vla_data.batch.runner import (
@@ -96,7 +94,7 @@ def parser() -> argparse.ArgumentParser:
     )
 
     annotate = commands.add_parser(
-        "annotate", help="GLM model-first task annotation over Curated episodes"
+        "annotate", help="two-pass GLM hierarchical semantics over D2/D3 clean domains"
     )
     annotate.add_argument("--curated-root", type=Path, required=True)
     annotate.add_argument("--quality-root", type=Path, required=True)
@@ -115,6 +113,27 @@ def parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_MAX_TEMPORAL_POINTS,
     )
+    annotate.add_argument(
+        "--provider",
+        choices=("standard-glm", "coding-plan-vision-mcp"),
+        default="standard-glm",
+        help="annotation VLM backend (default: standard BigModel PaaS GLM)",
+    )
+    annotate.add_argument(
+        "--prompt-version",
+        choices=("v1", "v2", "v3", "v3.1", "v3.2", "v3.3"),
+        default="v1",
+        help=(
+            "prompt family (v3.3 = v3.2 recall plus canonical compliance and "
+            "coarse-objective separation; v3.2 = stage-specific Pass-A recall "
+            "calibration + Pass-B local preservation)"
+        ),
+    )
+    annotate.add_argument(
+        "--baseline-annotation-root",
+        type=Path,
+        help="read-only D4 baseline root for v3 semantic comparison JSON/CSV",
+    )
     annotate.add_argument("--verbose", action="store_true")
     review = commands.add_parser(
         "review-annotation", help="review D5.1 verification; preserve D4 annotation"
@@ -128,6 +147,9 @@ def parser() -> argparse.ArgumentParser:
     )
     review.add_argument("--instruction")
     review.add_argument("--reviewer")
+    review.add_argument("--semantic-segment-id")
+    review.add_argument("--start-curated-index", type=int)
+    review.add_argument("--end-curated-index", type=int)
 
     manifest = commands.add_parser(
         "build-manifest", help="resolve approved training references and episode splits"
@@ -174,6 +196,16 @@ def parser() -> argparse.ArgumentParser:
     )
     export.add_argument("--force", action="store_true")
     export.add_argument("--dry-run", action="store_true")
+
+    probe = commands.add_parser(
+        "probe-provider",
+        help="zero-inference provider diagnostic (MCP handshake + tool discovery)",
+    )
+    probe.add_argument(
+        "--provider",
+        choices=("coding-plan-vision-mcp",),
+        default="coding-plan-vision-mcp",
+    )
 
     publish = commands.add_parser(
         "publish-hf", help="publish a validated LeRobot export to Hugging Face"
@@ -339,6 +371,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 status=args.status,
                 instruction=args.instruction,
                 reviewer=args.reviewer,
+                semantic_segment_id=args.semantic_segment_id,
+                start_curated_index=args.start_curated_index,
+                end_curated_index=args.end_curated_index,
             )
             print(f"{args.episode} {updated['verification_status']}")
             return 0
@@ -406,6 +441,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             _print_result(result, verbose=args.verbose)
             return 1 if result.failed_count else 0
 
+        if args.command == "probe-provider":
+            import json
+
+            from vla_data.annotation.mcp_provider import (
+                CodingPlanAPIKeyMissingError,
+                CodingPlanVisionMCPProvider,
+                MCPProviderConfig,
+                resolve_z_ai_api_key,
+            )
+
+            try:
+                resolve_z_ai_api_key()
+            except CodingPlanAPIKeyMissingError as exc:
+                print(f"vla-data: {type(exc).__name__}: {exc}", file=sys.stderr)
+                return 2
+            provider = CodingPlanVisionMCPProvider(MCPProviderConfig())
+            try:
+                print(json.dumps(provider.probe(), indent=2, sort_keys=True))
+            finally:
+                provider.close()
+            return 0
+
         if args.command == "annotate":
             from vla_data.annotation.glm_provider import (
                 GLM46VFlashProvider,
@@ -413,25 +470,82 @@ def main(argv: Sequence[str] | None = None) -> int:
                 MissingAPIKeyError,
                 resolve_api_key,
             )
+            from vla_data.annotation.mcp_provider import (
+                CodingPlanAPIKeyMissingError,
+                CodingPlanVisionMCPProvider,
+                MCPProviderConfig,
+                resolve_z_ai_api_key,
+            )
 
             if not args.dry_run:
-                try:
-                    resolve_api_key()
-                except MissingAPIKeyError as exc:
-                    print(f"vla-data: {type(exc).__name__}: {exc}", file=sys.stderr)
-                    return 2
-            annotation_result = annotate_dataset(
-                args.curated_root,
-                args.quality_root,
-                args.output_root,
-                lambda: GLM46VFlashProvider(GLMProviderConfig()),
-                episode=args.episode,
-                force=args.force,
-                dry_run=args.dry_run,
-                concurrency=args.concurrency,
-                max_temporal_points=args.max_temporal_points,
-            )
-            _print_annotation_result(annotation_result, verbose=args.verbose)
+                if args.provider == "coding-plan-vision-mcp":
+                    try:
+                        resolve_z_ai_api_key()
+                    except CodingPlanAPIKeyMissingError as exc:
+                        print(
+                            f"vla-data: {type(exc).__name__}: {exc}",
+                            file=sys.stderr,
+                        )
+                        return 2
+                else:
+                    try:
+                        resolve_api_key()
+                    except MissingAPIKeyError as exc:
+                        print(
+                            f"vla-data: {type(exc).__name__}: {exc}",
+                            file=sys.stderr,
+                        )
+                        return 2
+            provider = None
+            if not args.dry_run:
+                if args.provider == "coding-plan-vision-mcp":
+                    provider = CodingPlanVisionMCPProvider(
+                        MCPProviderConfig(
+                            storyboard_root=(
+                                args.output_root / "debug_storyboards"
+                                if args.prompt_version in {"v3", "v3.1", "v3.2", "v3.3"}
+                                else None
+                            )
+                        )
+                    )
+                else:
+                    provider = GLM46VFlashProvider(GLMProviderConfig())
+            try:
+                from vla_data.benchmark.episode_source import (
+                    is_benchmark_episode_dir,
+                )
+                from vla_data.benchmark.libero import LIBERO_PLATFORM_CONTEXT
+
+                platform_context = None
+                if is_benchmark_episode_dir(
+                    args.curated_root / (args.episode or "episode_000000")
+                ) or any(
+                    is_benchmark_episode_dir(path)
+                    for path in args.curated_root.glob("episode_*")
+                ):
+                    # Benchmark sources describe their own embodiment; the
+                    # production RM65B+SG100 context must never leak in.
+                    platform_context = LIBERO_PLATFORM_CONTEXT
+                annotation_result = annotate_hierarchical_dataset(
+                    args.curated_root,
+                    args.quality_root,
+                    args.output_root,
+                    provider,
+                    episode=args.episode,
+                    force=args.force,
+                    dry_run=args.dry_run,
+                    concurrency=args.concurrency,
+                    max_coarse_points=args.max_temporal_points,
+                    prompt_family=args.prompt_version,
+                    baseline_annotation_root=args.baseline_annotation_root,
+                    platform_context=platform_context,
+                )
+            finally:
+                if provider is not None:
+                    close = getattr(provider, "close", None)
+                    if close is not None:
+                        close()
+            _print_hierarchical_result(annotation_result, verbose=args.verbose)
             return 1 if annotation_result.failed_count else 0
 
         stages = tuple(
@@ -497,6 +611,38 @@ def _print_annotation_result(result, *, verbose: bool) -> None:
     print(f"Skipped    {result.summary['episodes_skipped']}")
     print(f"Failed     {result.summary['episodes_failed']}")
     print(f"Mean conf  {result.summary['mean_confidence']}")
+    print(f"Wall time  {result.wall_time_s:.3f} s")
+
+
+def _print_hierarchical_result(result, *, verbose: bool) -> None:
+    context = result.summary.get("platform_context")
+    if isinstance(context, dict):
+        print(f"Platform    {context['robot_arm']} + {context['end_effector']}")
+        print(f"Head camera {context['head_camera_role']}")
+        print(f"Wrist camera {context['right_wrist_camera_role']}")
+    for index, item in enumerate(result.results, start=1):
+        print(f"[{index}/{len(result.results)}] {item.episode_id}  {item.status}")
+        print(
+            f"  domains={item.clean_domains} pass_a_keyframes={item.pass_a_keyframes}"
+        )
+        if item.pass_a_indices:
+            print(f"  pass_a_curated_indices={list(item.pass_a_indices)}")
+        print(f"  expected_glm_calls={item.expected_glm_calls}")
+        if item.pass_b_mode:
+            print(f"  pass_b_mode={item.pass_b_mode}")
+        if item.pass_a_calls is not None:
+            print(f"  pass_a_calls={item.pass_a_calls}")
+        if item.pass_b_calls is not None:
+            print(f"  pass_b_calls={item.pass_b_calls}")
+        print(f"  prompt_versions={','.join(item.prompt_versions)}")
+        print(f"  destination={item.destination}")
+        if verbose and item.message:
+            print(f"  {item.message}")
+    print(f"Discovered {result.summary['episodes_discovered']}")
+    print(f"Processed  {result.summary['episodes_processed']}")
+    print(f"Skipped    {result.summary['episodes_skipped']}")
+    print(f"Ineligible {result.summary['episodes_ineligible']}")
+    print(f"Failed     {result.summary['episodes_failed']}")
     print(f"Wall time  {result.wall_time_s:.3f} s")
 
 

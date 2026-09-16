@@ -82,7 +82,7 @@ def make_plan(manifest_root: str | Path, dataset_name: str = "vla-local") -> dic
         "observation.state": {"dtype": "float32", "shape": [17], "names": ["state"]},
         "action": {"dtype": "float32", "shape": [17], "names": ["action"]},
     }
-    runs, fps_values, sources, identities = [], set(), [], []
+    runs, fps_values, source_map, identities = [], set(), {}, []
     split_indices = {"train": 0, "val": 0}
     for row in rows:
         episode = CuratedEpisode.load(row["curated_path"])
@@ -104,21 +104,52 @@ def make_plan(manifest_root: str | Path, dataset_name: str = "vla-local") -> dic
         ):
             raise ValueError("state/action units must remain rad")
         mask = np.load(row["training_transition_mask_path"], allow_pickle=False)
-        derived = contiguous_runs(episode.segment_offsets, mask)
+        semantic_segment_id = row.get("semantic_segment_id")
+        if semantic_segment_id is not None:
+            start, end = row["start_curated_index"], row["end_curated_index"]
+            if not (0 <= start < end <= episode.transition_count) or not bool(
+                mask[start:end].all()
+            ):
+                raise ValueError("semantic segment is outside the D3 clean mask")
+            matches = [
+                number
+                for number, (left, right) in enumerate(
+                    pairwise(episode.segment_offsets)
+                )
+                if left <= start < end <= right
+            ]
+            if len(matches) != 1:
+                raise ValueError("semantic segment crosses a D2 physical boundary")
+            derived = [(matches[0], 0, start, end)]
+        else:
+            derived = contiguous_runs(episode.segment_offsets, mask)
         if (
             sum(end - start for _, _, start, end in derived)
             != row["transition_count_selected"]
         ):
             raise ValueError("run accounting differs from manifest selection")
-        sources.append(
+        source_id = row.get("source_episode_id", row["episode_id"])
+        source = source_map.setdefault(
+            source_id,
             {
-                "episode_id": row["episode_id"],
+                "episode_id": source_id,
                 "split": row["split"],
                 "d2_segments": len(episode.segment_offsets) - 1,
-                "selected_transitions": row["transition_count_selected"],
-                "export_runs": len(derived),
-            }
+                "selected_transitions": 0,
+                "export_runs": 0,
+                "source_dataset_status": episode.metadata.get("source_dataset_status"),
+                "training_use_status": (
+                    "NOT_FOR_REAL_MODEL_TRAINING"
+                    if episode.metadata.get("source_dataset_status")
+                    == "SYNTHETIC_TEST_ONLY"
+                    else "TRAINING_ELIGIBLE_SOURCE"
+                ),
+            },
         )
+        if source["split"] != row["split"]:
+            raise ValueError("semantic segments from one source cross train/val split")
+        source["selected_transitions"] += row["transition_count_selected"]
+        source["export_runs"] += len(derived)
         # Lightweight identities plus headers, not another full image-byte hash.
         image_paths = set()
         for segment, number, start, end in derived:
@@ -153,9 +184,21 @@ def make_plan(manifest_root: str | Path, dataset_name: str = "vla-local") -> dic
             runs.append(
                 {
                     "lerobot_episode_index": split_indices[split],
-                    "export_run_id": f"{row['episode_id']}__segment_{segment:03d}__run_{number:03d}",
-                    "source_episode_id": row["episode_id"],
+                    "export_run_id": (
+                        row.get("training_unit_id")
+                        or f"{row['episode_id']}__segment_{segment:03d}__run_{number:03d}"
+                    ),
+                    "source_episode_id": source_id,
                     "source_segment_id": segment,
+                    "semantic_segment_id": semantic_segment_id,
+                    "episode_task": row.get("episode_task"),
+                    "episode_task_model_instruction": row.get(
+                        "episode_task_model_instruction"
+                    ),
+                    "episode_task_verification_status": row.get(
+                        "episode_task_verification_status"
+                    ),
+                    "training_use_status": source["training_use_status"],
                     "source_curated_start": start,
                     "source_curated_end": end - 1,
                     "transition_count": end - start,
@@ -193,7 +236,7 @@ def make_plan(manifest_root: str | Path, dataset_name: str = "vla-local") -> dic
         "features": features,
         "fps": next(iter(fps_values), None),
         "camera_names": list(CAMERAS),
-        "sources": sources,
+        "sources": [source_map[key] for key in sorted(source_map)],
         "runs": runs,
         "manifest_hashes": {
             name: hashlib.sha256((root / name).read_bytes()).hexdigest()

@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from vla_data.batch.discovery import discover_curated_episodes
-from vla_data.manifest.eligibility import inspect_episode
+from vla_data.manifest.eligibility import inspect_training_units
 from vla_data.manifest.schema import OUTPUT_FILES, SCHEMA_VERSION
 from vla_data.manifest.split import SplitConfig, assign_splits
 from vla_data.manifest.summary import summarize
@@ -90,17 +90,25 @@ def build_training_manifest(
         ids = [episode]
     fingerprint = input_fingerprint(ids, roots, config)
     records = [
-        inspect_episode(
+        record
+        for value in ids
+        for record in inspect_training_units(
             value,
             roots[0] / value,
             roots[1] / value,
             roots[2] / value / "annotation.json",
             roots[3] / value / "verification.json",
         )
-        for value in ids
     ]
     splits = assign_splits(
-        [r["episode_id"] for r in records if not r["reason"]], config
+        sorted(
+            {
+                r.get("source_episode_id", r["episode_id"])
+                for r in records
+                if not r["reason"]
+            }
+        ),
+        config,
     )
     policies = {
         json.dumps(r["verification_policy"], sort_keys=True)
@@ -110,7 +118,10 @@ def build_training_manifest(
     if len(policies) > 1:
         raise ValueError("mixed verification policies; verify the whole dataset first")
     for record in records:
-        record["split"] = splits.get(record["episode_id"])
+        assigned = splits.get(record.get("source_episode_id", record["episode_id"]))
+        if "semantic_segment_id" in record:
+            record["source_split"] = assigned
+        record["split"] = assigned if not record["reason"] else None
     summary = summarize(records)
     summary.update(
         {
@@ -139,12 +150,17 @@ def build_training_manifest(
             if previous == summary:
                 return ManifestBuildResult("SKIPPED", summary, tuple(records))
     output.mkdir(parents=True, exist_ok=True)
+
+    def unit_id(record: dict) -> str:
+        return record.get("training_unit_id", record["episode_id"])
+
     groups = {
         "episodes.jsonl": [r for r in records if not r["reason"]],
         "train.jsonl": [r for r in records if r["split"] == "train"],
         "val.jsonl": [r for r in records if r["split"] == "val"],
         "excluded.jsonl": [r for r in records if r["reason"]],
     }
+    groups = {name: sorted(values, key=unit_id) for name, values in groups.items()}
     # Stage the complete set; publish summary last. Partial/interrupted sets fail
     # independent validation and cannot satisfy resume.
     with tempfile.TemporaryDirectory(prefix=".manifest-", dir=output) as temporary:

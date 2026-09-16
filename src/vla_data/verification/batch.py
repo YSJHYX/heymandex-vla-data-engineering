@@ -7,7 +7,9 @@ from vla_data.batch.discovery import canonical_episode_id, discover_curated_epis
 from vla_data.verification.evaluator import evaluate_verification
 from vla_data.verification.policy import AutoVerificationAuditConfig, VerificationPolicy
 from vla_data.verification.schema import (
+    HIERARCHICAL_SCHEMA_VERSION,
     HUMAN_STATES,
+    hierarchical_status,
     load_verification,
     seal,
     write_verification,
@@ -77,6 +79,56 @@ def verify_annotations(
         # A human decision survives force/threshold changes on identical source
         # artifacts. Source changes invalidate it; D4 is never re-annotated here.
         if (
+            prior is not None
+            and prior.get("schema_version") == HIERARCHICAL_SCHEMA_VERSION
+            and candidate.get("schema_version") == HIERARCHICAL_SCHEMA_VERSION
+            and prior["input_identity"] == candidate["input_identity"]
+            and not candidate["reason"]
+        ):
+            previous_task = prior["episode_task"]
+            current_task = candidate["episode_task"]
+            if (
+                previous_task["verification_status"] in HUMAN_STATES
+                and previous_task["model_instruction"]
+                == current_task["model_instruction"]
+                and previous_task["model_confidence"]
+                == current_task["model_confidence"]
+            ):
+                for key in (
+                    "verification_status",
+                    "verification_source",
+                    "human_review",
+                    "final_instruction",
+                ):
+                    current_task[key] = previous_task[key]
+            previous = {
+                segment["semantic_segment_id"]: segment
+                for segment in prior["semantic_segments"]
+            }
+            for segment in candidate["semantic_segments"]:
+                old = previous.get(segment["semantic_segment_id"])
+                if old is None or old["verification_status"] not in HUMAN_STATES:
+                    continue
+                immutable = (
+                    "model_start_curated_index",
+                    "model_end_curated_index",
+                    "model_instruction",
+                    "model_confidence",
+                )
+                if any(old[key] != segment[key] for key in immutable):
+                    continue
+                for key in (
+                    "verification_status",
+                    "verification_source",
+                    "human_review",
+                    "final_start_curated_index",
+                    "final_end_curated_index",
+                    "final_instruction",
+                ):
+                    segment[key] = old[key]
+            candidate["verification_status"] = hierarchical_status(candidate)
+            seal(candidate)
+        elif (
             prior is not None
             and prior["verification_status"] in HUMAN_STATES
             and prior["input_identity"] == candidate["input_identity"]

@@ -12,15 +12,21 @@ from vla_data.manifest.schema import (
 def summarize(records: list[dict]) -> dict:
     train = [r for r in records if r["split"] == "train"]
     val = [r for r in records if r["split"] == "val"]
+    sources = {r.get("source_episode_id", r["episode_id"]) for r in records}
     return {
         "schema_name": SUMMARY_SCHEMA_NAME,
         "schema_version": SCHEMA_VERSION,
-        "episodes_discovered": len(records),
+        "episodes_discovered": len(sources),
         "training_eligible": len(train) + len(val),
+        "training_units": len(train) + len(val),
         "needs_review": sum(r["eligibility"] == "NEEDS_REVIEW" for r in records),
         "excluded": sum(r["eligibility"] == "EXCLUDED" for r in records),
-        "train_episodes": len(train),
-        "validation_episodes": len(val),
+        "train_episodes": len(
+            {r.get("source_episode_id", r["episode_id"]) for r in train}
+        ),
+        "validation_episodes": len(
+            {r.get("source_episode_id", r["episode_id"]) for r in val}
+        ),
         "train_transitions": sum(r["transition_count_selected"] for r in train),
         "validation_transitions": sum(r["transition_count_selected"] for r in val),
         "annotation_status_counts": dict(

@@ -10,7 +10,14 @@ from vla_data.annotation.eligibility import evaluate_eligibility
 from vla_data.annotation.schema import load_annotation
 from vla_data.quality.report import QUALITY_SCHEMA_VERSION
 from vla_data.verification.policy import VerificationPolicy
-from vla_data.verification.schema import SCHEMA_NAME, SCHEMA_VERSION, digest, seal
+from vla_data.verification.schema import (
+    HIERARCHICAL_SCHEMA_VERSION,
+    SCHEMA_NAME,
+    SCHEMA_VERSION,
+    digest,
+    hierarchical_status,
+    seal,
+)
 
 
 def artifact_identity(path: Path) -> list[str]:
@@ -81,6 +88,10 @@ def evaluate_verification(
         annotation = load_annotation(annotation_path)
         if annotation["episode_id"] != episode_id:
             raise ValueError("annotation episode_id mismatch")
+        if annotation["schema_version"] == 2:
+            return _evaluate_hierarchical(
+                record, annotation, policy, identity, annotation_path, quality_path
+            )
         model = annotation["model_annotation"]
         record["model_instruction"] = model["instruction"]
         record["model_confidence"] = model["confidence"]
@@ -92,4 +103,74 @@ def evaluate_verification(
         record["final_instruction"] = model["instruction"] if automatic else None
     except (OSError, ValueError, TypeError, KeyError) as exc:
         record["reason"] = ["ANNOTATION_INVALID_OR_MISSING", str(exc)]
+    return seal(record)
+
+
+def _evaluate_hierarchical(
+    legacy_record: dict,
+    annotation: dict,
+    policy: VerificationPolicy,
+    identity: list,
+    annotation_path: Path,
+    quality_path: Path,
+) -> dict:
+    task_source = annotation["episode_task"]
+    task_automatic = task_source["confidence"] >= policy.confidence_threshold
+    episode_task = {
+        "model_instruction": task_source["instruction"],
+        "model_confidence": task_source["confidence"],
+        "model_paraphrases": list(task_source.get("paraphrases", [])),
+        "verification_status": (
+            "AUTO_VERIFIED" if task_automatic else "NEEDS_HUMAN_REVIEW"
+        ),
+        "verification_source": "MODEL_CONFIDENCE_POLICY",
+        "human_review": {"reviewer": None, "corrected_instruction": None},
+        "final_instruction": task_source["instruction"] if task_automatic else None,
+    }
+    segments = []
+    for source in annotation["semantic_segments"]:
+        automatic = source["confidence"] >= policy.confidence_threshold
+        status = "AUTO_VERIFIED" if automatic else "NEEDS_HUMAN_REVIEW"
+        segments.append(
+            {
+                "semantic_segment_id": source["segment_id"],
+                "model_start_curated_index": source["start_curated_index"],
+                "model_end_curated_index": source["end_curated_index"],
+                "model_instruction": source["instruction"],
+                "model_confidence": source["confidence"],
+                "model_paraphrases": list(source.get("paraphrases", [])),
+                "verification_status": status,
+                "verification_source": "MODEL_CONFIDENCE_POLICY",
+                "human_review": {
+                    "reviewer": None,
+                    "corrected_instruction": None,
+                    "corrected_start_curated_index": None,
+                    "corrected_end_curated_index": None,
+                },
+                "final_start_curated_index": source["start_curated_index"],
+                "final_end_curated_index": source["end_curated_index"],
+                "final_instruction": source["instruction"] if automatic else None,
+            }
+        )
+    record = {
+        "schema_name": SCHEMA_NAME,
+        "schema_version": HIERARCHICAL_SCHEMA_VERSION,
+        "episode_id": legacy_record["episode_id"],
+        "policy": asdict(policy),
+        "input_identity": identity,
+        "input_fingerprint": digest(
+            [HIERARCHICAL_SCHEMA_VERSION, asdict(policy), identity]
+        ),
+        "annotation_path": str(annotation_path.resolve()),
+        "quality_path": str(quality_path.resolve()),
+        "keyframes_path": str(annotation_path.with_name("keyframes.json").resolve()),
+        "annotation_present": True,
+        "quality_eligible": True,
+        "episode_task": episode_task,
+        "clean_domains": annotation["clean_domains"],
+        "semantic_segments": segments,
+        "non_training_intervals": annotation["non_training_intervals"],
+        "reason": [],
+    }
+    record["verification_status"] = hierarchical_status(record)
     return seal(record)

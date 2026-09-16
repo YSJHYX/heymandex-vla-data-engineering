@@ -100,9 +100,13 @@ def inspect_episode(
         document = load_annotation(annotation)
         if document["episode_id"] != episode_id:
             raise ValueError("annotation episode_id mismatch")
-        status = document["review"]["status"]
-        record["annotation_status"] = status
-        record["task_type"] = document["model_annotation"].get("task_type")
+        if document["schema_version"] == 2:
+            record["annotation_status"] = "HIERARCHICAL_V2"
+            record["task_type"] = document["episode_task"].get("task_type")
+        else:
+            status = document["review"]["status"]
+            record["annotation_status"] = status
+            record["task_type"] = document["model_annotation"].get("task_type")
     except (OSError, ValueError, TypeError, KeyError) as exc:
         reasons.append("ANNOTATION_INVALID_OR_MISSING")
         details.append(str(exc))
@@ -118,8 +122,14 @@ def inspect_episode(
             )
         record["verification_status"] = verified["verification_status"]
         record["verification_policy"] = verified["policy"]
-        record["final_instruction"] = verified["final_instruction"]
-        if verified["verification_status"] not in APPROVED:
+        if verified["schema_version"] == 2:
+            record["final_instruction"] = None
+        else:
+            record["final_instruction"] = verified["final_instruction"]
+        if (
+            verified["schema_version"] != 2
+            and verified["verification_status"] not in APPROVED
+        ):
             reasons.append(verified["verification_status"])
     except (OSError, ValueError, TypeError, KeyError) as exc:
         reasons.append("VERIFICATION_INVALID_OR_MISSING")
@@ -134,3 +144,101 @@ def inspect_episode(
         else "EXCLUDED"
     )
     return record
+
+
+def inspect_training_units(
+    episode_id: str, curated: Path, quality: Path, annotation: Path, verification: Path
+) -> list[dict]:
+    """Return one legacy source row or one row per hierarchical semantic segment."""
+
+    base = inspect_episode(episode_id, curated, quality, annotation, verification)
+    try:
+        document = load_annotation(annotation)
+        if document["schema_version"] != 2:
+            return [base]
+        verified = load_verification(verification)
+        if verified["schema_version"] != 2:
+            raise ValueError("annotation v2 requires verification v2")
+        loaded = CuratedEpisode.load(curated)
+        import numpy as np
+
+        mask = np.load(quality / "quality_mask.npy", allow_pickle=False)
+        units = []
+        for segment in verified["semantic_segments"]:
+            row = dict(base)
+            start = segment["final_start_curated_index"]
+            end = segment["final_end_curated_index"]
+            segment_reasons = list(base["reason"])
+            segment_details = list(base["details"])
+            if not (0 <= start < end <= loaded.transition_count) or not bool(
+                mask[start:end].all()
+            ):
+                segment_reasons.append("SEMANTIC_BOUNDARY_OUTSIDE_D3_CLEAN_RUN")
+            if not any(
+                a <= start < end <= b
+                for a, b in zip(
+                    loaded.segment_offsets, loaded.segment_offsets[1:], strict=True
+                )
+            ):
+                segment_reasons.append("SEMANTIC_BOUNDARY_CROSSES_D2_SEGMENT")
+            status = segment["verification_status"]
+            if status not in APPROVED:
+                segment_reasons.append(status)
+            row.update(
+                {
+                    "training_unit_id": f"{episode_id}__{segment['semantic_segment_id']}",
+                    "source_episode_id": episode_id,
+                    "semantic_segment_id": segment["semantic_segment_id"],
+                    "start_curated_index": start,
+                    "end_curated_index": end,
+                    "episode_task": verified["episode_task"]["final_instruction"],
+                    "episode_task_model_instruction": verified["episode_task"][
+                        "model_instruction"
+                    ],
+                    "episode_task_verification_status": verified["episode_task"][
+                        "verification_status"
+                    ],
+                    "verification_status": status,
+                    "final_instruction": segment["final_instruction"],
+                    "transition_count_selected": end - start,
+                    "reason": sorted(set(segment_reasons)),
+                    "details": segment_details,
+                }
+            )
+            row["eligibility"] = (
+                "TRAINING_ELIGIBLE"
+                if not row["reason"]
+                else "NEEDS_REVIEW"
+                if set(row["reason"]) == {"NEEDS_HUMAN_REVIEW"}
+                else "EXCLUDED"
+            )
+            units.append(row)
+        if units:
+            return units
+        base.update(
+            {
+                "training_unit_id": f"{episode_id}__no_semantic_segment",
+                "source_episode_id": episode_id,
+                "semantic_segment_id": None,
+                "start_curated_index": None,
+                "end_curated_index": None,
+                "episode_task": verified["episode_task"]["final_instruction"],
+                "episode_task_model_instruction": verified["episode_task"][
+                    "model_instruction"
+                ],
+                "episode_task_verification_status": verified["episode_task"][
+                    "verification_status"
+                ],
+                "reason": sorted(
+                    set(base["reason"] + ["NO_SEMANTIC_TRAINING_SEGMENTS"])
+                ),
+                "eligibility": "EXCLUDED",
+                "transition_count_selected": 0,
+            }
+        )
+        return [base]
+    except (OSError, ValueError, TypeError, KeyError, IndexError, BadZipFile) as exc:
+        base["reason"] = sorted(set(base["reason"] + ["HIERARCHICAL_INPUT_INVALID"]))
+        base["details"].append(str(exc))
+        base["eligibility"] = "EXCLUDED"
+        return [base]
