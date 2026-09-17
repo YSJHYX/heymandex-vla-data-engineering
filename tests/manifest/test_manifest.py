@@ -71,13 +71,13 @@ def test_quality_exclusion_overrides_review(manifest_tree, outcome):
     assert any(outcome in reason for reason in result.records[0]["reason"])
 
 
-def test_explicit_expert_exclusion_overrides_annotation(manifest_tree):
+def test_expert_status_does_not_override_annotation(manifest_tree):
     tree = manifest_tree()
     mutate_json(
         tree.curated / "episode_000000/metadata.json",
         expert_training_status="EXCLUDE_FROM_EXPERT_TRAINING",
     )
-    assert "EXCLUDE_FROM_EXPERT_TRAINING" in build(tree).records[0]["reason"]
+    assert build(tree).records[0]["reason"] == []
 
 
 @pytest.mark.parametrize("clean", [0, 1])

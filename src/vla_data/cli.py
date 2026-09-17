@@ -256,7 +256,7 @@ def parser() -> argparse.ArgumentParser:
     publish.add_argument(
         "--force",
         action="store_true",
-        help="re-upload known matching data; never deletes unknown remote files",
+        help="conservative retry flag; never duplicates episodes or deletes unknown files",
     )
     publish.add_argument("--dry-run", action="store_true")
     return root
@@ -346,6 +346,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 lerobot_python=str(args.lerobot_python),
                 dry_run=args.dry_run,
                 force=args.force,
+                verification_cache_dir=args.cache_dir,
             )
             print(
                 f"Repo        {evidence['repo_id']} "
@@ -360,6 +361,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(
                     f"Remote      {evidence['remote_before']['file_count']} files, "
                     f"private={evidence['remote_before']['private']}"
+                )
+            if "merge_plan" in evidence:
+                plan = evidence["merge_plan"]
+                print(
+                    "Merge       "
+                    f"BASELINE={plan['baseline_episodes']}/{plan['baseline_frames']} "
+                    f"INCOMING={plan['incoming_episodes']}/{plan['incoming_frames']} "
+                    f"DUPLICATES={plan['already_present']} "
+                    f"TO_APPEND={plan['to_append']} "
+                    f"MERGED_TOTAL={plan['merged_episodes']}/{plan['merged_frames']}"
                 )
             print(f"Action      {evidence['action']}")
             if evidence.get("would_action"):
@@ -377,15 +388,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             if args.dry_run or evidence["action"] != "UPLOADED":
                 return 0
-            cache = args.cache_dir or Path(tempfile.mkdtemp(prefix="vla_d7_cache_"))
-            validation = validate_remote(
-                args.dataset_root,
-                args.repo_id,
-                revision=evidence["commit_sha"],
-                hf_python=str(args.hf_python) if args.hf_python else None,
-                lerobot_python=str(args.lerobot_python),
-                cache_dir=cache,
-            )
+            validation = evidence["remote_validation"]
             lerobot = validation["lerobot"]
             print("Remote validation PASS")
             print(f"  revision  {validation['revision']}")

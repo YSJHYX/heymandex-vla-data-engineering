@@ -73,7 +73,7 @@ def annotated_tree(raw_dataset_factory, synthetic_raw_episode, tmp_path):
     Episode outcomes after D3 evaluation:
       episode_000000 -> ACCEPT
       episode_000001 -> ACCEPT_WITH_WARNING (duplicate qcmd timestamps)
-      episode_000002 -> EXCLUDE_FROM_EXPERT_TRAINING (explicit flag)
+      episode_000002 -> EXCLUDE_FROM_EXPERT_TRAINING (objective static trajectory)
     """
 
     raw = raw_dataset_factory(tmp_path / "raw", (0, 1, 2))
@@ -91,6 +91,12 @@ def annotated_tree(raw_dataset_factory, synthetic_raw_episode, tmp_path):
     curated = tmp_path / "curated"
     quality = tmp_path / "quality"
     build_curated_dataset(raw, curated, expert_exclude=("episode_000002",))
+    trajectory_path = curated / "episode_000002" / "trajectory.npz"
+    with np.load(trajectory_path, allow_pickle=False) as archive:
+        trajectory = {key: np.asarray(archive[key]).copy() for key in archive.files}
+    for key in ("robot_qpos_17d_rad", "robot_qcmd_17d_rad"):
+        trajectory[key][:] = trajectory[key][0]
+    np.savez(trajectory_path, **trajectory)
     quality_dataset(curated, quality)
 
     return SimpleNamespace(

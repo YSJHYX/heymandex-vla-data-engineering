@@ -6,15 +6,14 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import subprocess
 import tempfile
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+from vla_data.export.validator import validate_lerobot_export
 from vla_data.publish.local import (
-    APPROVED_EXPERT_STATUS,
     NON_CANONICAL_REMOTE_FILES,
     InvalidDatasetRootError,
     build_canonical_manifest,
@@ -22,10 +21,10 @@ from vla_data.publish.local import (
     validate_dataset_root,
     validate_repo_id,
 )
+from vla_data.publish.merge import plan_logical_merge, rebuild_logical_dataset
 from vla_data.publish.remote import HFWorkerError, hf_call
 
 STATUS_UPLOADED = "UPLOADED"
-STATUS_SKIPPED = "SKIPPED"
 STATUS_DRY_RUN = "DRY_RUN"
 FULL_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
@@ -46,10 +45,6 @@ class RemoteValidationError(RuntimeError):
     """The remote snapshot does not match the local canonical dataset."""
 
 
-class PublicationEligibilityError(RuntimeError):
-    """The export is valid for integration but not approved for production HF."""
-
-
 def publish_dataset(
     dataset_root: str | Path,
     repo_id: str,
@@ -58,121 +53,169 @@ def publish_dataset(
     lerobot_python: str | None = None,
     dry_run: bool = False,
     force: bool = False,
+    verification_cache_dir: str | Path | None = None,
 ) -> dict:
-    """Publish a validated D6 LeRobot root to the HF dataset repo root.
-
-    Publication only: canonical files are copied byte-for-byte into a staging
-    directory (plus a production dataset card when the remote has none) and
-    uploaded in a single commit. The D6 dataset itself is never mutated.
-    """
+    """Publish a complete, locally rebuilt cumulative LeRobot revision."""
 
     started = time.monotonic()
     validate_repo_id(repo_id)
     layout = validate_dataset_root(dataset_root)
     manifest = build_canonical_manifest(dataset_root)
+    if lerobot_python is None:
+        raise InvalidDatasetRootError(
+            "publication requires --lerobot-python for independent validate-lerobot"
+        )
+    validation = validate_lerobot_export(
+        Path(dataset_root).parent, lerobot_python=lerobot_python
+    )
+    if not validation.passed:
+        raise InvalidDatasetRootError(
+            f"independent validate-lerobot failed: {validation.errors}"
+        )
     source_export_fingerprint = _source_export_fingerprint(dataset_root)
-    if lerobot_python:
-        local_reload = _official_reload(
-            local_root=str(Path(dataset_root).resolve()),
-            remote_root=str(Path(dataset_root).resolve()),
-            lerobot_python=lerobot_python,
-            expected_tasks=layout["tasks"],
-        )
-        if not local_reload.get("reload_pass"):
-            raise InvalidDatasetRootError(
-                f"official local LeRobot reload failed: {local_reload.get('errors')}"
-            )
-    else:
-        local_reload = None
-
-    if not layout["publication_approved"]:
-        reason = (
-            "production publication requires explicit "
-            f"expert_training_status={APPROVED_EXPERT_STATUS} on every source run; "
-            f"observed {layout['expert_training_statuses']}"
-        )
-        if not dry_run:
-            raise PublicationEligibilityError(reason)
-        return {
-            "schema_name": "vla_hf_publication",
-            "schema_version": 1,
-            "repo_id": repo_id,
-            "action": "BLOCKED",
-            "would_action": "BLOCKED_EXPERT_APPROVAL",
-            "reason": reason,
-            "local_fingerprint": manifest["fingerprint"],
-            "local_file_count": manifest["file_count"],
-            "local_bytes": manifest["total_bytes"],
-            "local_official_reload": local_reload,
-            "expert_training_statuses": layout["expert_training_statuses"],
-            "wall_time_s": time.monotonic() - started,
-        }
     if source_export_fingerprint is None:
-        reason = "missing valid source export fingerprint beside the split root"
-        if not dry_run:
-            raise PublicationEligibilityError(reason)
-        return {
-            "schema_name": "vla_hf_publication",
-            "schema_version": 1,
-            "repo_id": repo_id,
-            "action": "BLOCKED",
-            "would_action": "BLOCKED_SOURCE_EXPORT_FINGERPRINT",
-            "reason": reason,
-            "local_fingerprint": manifest["fingerprint"],
-            "local_file_count": manifest["file_count"],
-            "local_bytes": manifest["total_bytes"],
-            "local_official_reload": local_reload,
-            "wall_time_s": time.monotonic() - started,
-        }
+        raise InvalidDatasetRootError(
+            "missing valid direct D2/D3 source export fingerprint"
+        )
 
     state = _authenticated_repo_state(repo_id, hf_python)
-    action, would_action = _decide(state, manifest, dry_run=dry_run, force=force)
-
-    evidence = {
-        "schema_name": "vla_hf_publication",
-        "schema_version": 1,
-        "repo_id": repo_id,
-        "repo_type": "dataset",
-        "account": _account(hf_python),
-        "local_fingerprint": manifest["fingerprint"],
-        "local_file_count": manifest["file_count"],
-        "local_bytes": manifest["total_bytes"],
-        "source_export_fingerprint": source_export_fingerprint,
-        "timestamp_utc": datetime.now(UTC).isoformat(),
-        "expert_training_statuses": layout["expert_training_statuses"],
-        "local_official_reload": local_reload,
-        "remote_before": {
-            "private": state["private"],
-            "sha": state["sha"],
-            "v2_1_tag_sha": state.get("v2_1_tag_sha"),
-            "file_count": len(state["files"]),
-        },
-        "action": action,
-        "would_action": would_action,
-        "tasks": layout["tasks"],
-        "fps": layout["fps"],
-    }
-
-    if action in {STATUS_DRY_RUN, "BLOCKED", STATUS_SKIPPED}:
-        return {**evidence, "wall_time_s": time.monotonic() - started}
-
-    readme_needed = not any(file["path"] == "README.md" for file in state["files"])
-    staging = _stage(dataset_root, manifest, readme_needed, layout)
-    try:
-        commit = hf_call(
-            "upload", {"repo_id": repo_id, "staging_dir": str(staging)}, hf_python
+    if state["private"] is not True:
+        if dry_run:
+            return {
+                "repo_id": repo_id,
+                "action": "BLOCKED",
+                "would_action": "BLOCKED_PUBLIC_REPOSITORY",
+                "local_file_count": manifest["file_count"],
+                "local_bytes": manifest["total_bytes"],
+                "local_fingerprint": manifest["fingerprint"],
+            }
+        raise RemotePrivacyError(
+            "HF publication requires an existing private dataset repository"
         )
-    finally:
-        shutil.rmtree(staging, ignore_errors=True)
-    return {
-        **evidence,
-        "commit_sha": commit["commit_sha"],
-        "commit_url": commit["commit_url"],
-        "codebase_tag": commit["codebase_tag"],
-        "uploaded_file_count": manifest["file_count"] + int(readme_needed),
-        "uploaded_bytes": manifest["total_bytes"],
-        "wall_time_s": time.monotonic() - started,
-    }
+
+    with tempfile.TemporaryDirectory(prefix="vla_hf_cumulative_") as temporary:
+        work = Path(temporary)
+        try:
+            baseline, baseline_manifest = _download_valid_baseline(
+                state, repo_id, hf_python, lerobot_python, work
+            )
+            plan = plan_logical_merge(
+                dataset_root,
+                baseline,
+                baseline_revision=state["sha"] if baseline else None,
+                source_export_fingerprint=source_export_fingerprint,
+            )
+        except (
+            RemoteNotEmptyError,
+            InvalidDatasetRootError,
+            RemoteValidationError,
+        ) as exc:
+            if not dry_run:
+                raise
+            return {
+                "repo_id": repo_id,
+                "action": "BLOCKED",
+                "would_action": "BLOCKED_INVALID_BASELINE_OR_PROVENANCE",
+                "reason": str(exc),
+                "local_file_count": manifest["file_count"],
+                "local_bytes": manifest["total_bytes"],
+                "local_fingerprint": manifest["fingerprint"],
+            }
+        evidence = {
+            "schema_name": "vla_hf_publication",
+            "schema_version": 2,
+            "repo_id": repo_id,
+            "repo_type": "dataset",
+            "account": _account(hf_python),
+            "local_fingerprint": manifest["fingerprint"],
+            "local_file_count": manifest["file_count"],
+            "local_bytes": manifest["total_bytes"],
+            "source_export_fingerprint": source_export_fingerprint,
+            "timestamp_utc": datetime.now(UTC).isoformat(),
+            "expert_training_statuses": layout["expert_training_statuses"],
+            "local_validation": validation.evidence,
+            "remote_before": {
+                "private": True,
+                "sha": state["sha"],
+                "file_count": len(state["files"]),
+            },
+            "merge_plan": {
+                key: value for key, value in plan.items() if key != "provenance"
+            },
+            "tasks": layout["tasks"],
+            "fps": layout["fps"],
+        }
+        if not plan["to_append"]:
+            return {
+                **evidence,
+                "action": STATUS_DRY_RUN if dry_run else "NO_NEW_EPISODES",
+                "would_action": "NO_NEW_EPISODES",
+                "wall_time_s": time.monotonic() - started,
+            }
+        if dry_run:
+            return {
+                **evidence,
+                "action": STATUS_DRY_RUN,
+                "would_action": STATUS_UPLOADED,
+                "wall_time_s": time.monotonic() - started,
+            }
+        rebuilt = work / "rebuilt"
+        merged = rebuild_logical_dataset(
+            dataset_root, baseline, plan, rebuilt, lerobot_python=lerobot_python
+        )
+        merged_layout = validate_dataset_root(rebuilt)
+        reload = _official_reload(
+            local_root=str(rebuilt),
+            remote_root=str(rebuilt),
+            lerobot_python=lerobot_python,
+            expected_tasks=merged_layout["tasks"],
+        )
+        if not reload.get("reload_pass"):
+            raise InvalidDatasetRootError(
+                f"merged official LeRobot reload failed: {reload.get('errors')}"
+            )
+        merged_manifest = build_canonical_manifest(rebuilt)
+        old_paths = (
+            {entry["relative_path"] for entry in baseline_manifest["files"]}
+            if baseline_manifest
+            else set()
+        )
+        new_paths = {entry["relative_path"] for entry in merged_manifest["files"]}
+        obsolete_managed = sorted(old_paths - new_paths)
+        (rebuilt / "README.md").write_text(
+            build_readme(merged_layout["tasks"], merged_layout["fps"])
+        )
+        commit = hf_call(
+            "upload",
+            {
+                "repo_id": repo_id,
+                "staging_dir": str(rebuilt),
+                "parent_commit": state["sha"],
+                "delete_paths": obsolete_managed,
+            },
+            hf_python,
+        )
+        remote_check = validate_remote(
+            rebuilt,
+            repo_id,
+            revision=commit["commit_sha"],
+            hf_python=hf_python,
+            lerobot_python=lerobot_python,
+            cache_dir=verification_cache_dir or work / "verification_cache",
+        )
+        return {
+            **evidence,
+            "action": STATUS_UPLOADED,
+            "would_action": STATUS_UPLOADED,
+            "commit_sha": commit["commit_sha"],
+            "commit_url": commit["commit_url"],
+            "codebase_tag": commit["codebase_tag"],
+            "merged_validation": merged,
+            "remote_validation": remote_check,
+            "uploaded_file_count": merged_manifest["file_count"] + 1,
+            "uploaded_bytes": merged_manifest["total_bytes"],
+            "wall_time_s": time.monotonic() - started,
+        }
 
 
 def validate_remote(
@@ -268,6 +311,8 @@ def _source_export_fingerprint(dataset_root: str | Path) -> str | None:
     if not path.is_file():
         return None
     summary = json.loads(path.read_text())
+    if summary.get("source_mode") != "DIRECT_D2_D3":
+        return None
     value = summary.get("fingerprint")
     return (
         value
@@ -297,9 +342,85 @@ def _authenticated_repo_state(repo_id: str, hf_python: str | None) -> dict:
         )
     if state.get("private") not in {True, False}:
         raise RemoteValidationError("remote repository visibility is unknown")
-    if not isinstance(state.get("files"), list) or not state.get("sha"):
+    if (
+        not isinstance(state.get("files"), list)
+        or not isinstance(state.get("sha"), str)
+        or not FULL_SHA_PATTERN.fullmatch(state["sha"])
+    ):
         raise RemoteValidationError("remote repository metadata is incomplete")
     return state
+
+
+def _download_valid_baseline(
+    state: dict,
+    repo_id: str,
+    hf_python: str | None,
+    lerobot_python: str,
+    work: Path,
+) -> tuple[Path | None, dict | None]:
+    """Pin and validate the complete old dataset before any merge or upload."""
+
+    paths = {file["path"] for file in state["files"]}
+    managed = {path for path in paths if path.startswith(("meta/", "data/", "videos/"))}
+    if not managed:
+        unknown = paths - NON_CANONICAL_REMOTE_FILES
+        if unknown:
+            raise RemoteNotEmptyError(
+                f"REMOTE REPOSITORY NOT EMPTY: {sorted(unknown)[:5]}"
+            )
+        return None, None
+    if "meta/info.json" not in managed:
+        raise InvalidDatasetRootError(
+            "remote has managed files but no LeRobot info.json"
+        )
+    downloaded = hf_call(
+        "download",
+        {
+            "repo_id": repo_id,
+            "revision": state["sha"],
+            "cache_dir": str(work / "baseline_cache"),
+        },
+        hf_python,
+    )
+    if (
+        downloaded.get("resolved_sha") != state["sha"]
+        or downloaded.get("private") is not True
+    ):
+        raise RemoteValidationError("baseline download is not pinned and private")
+    snapshot = Path(downloaded["snapshot_path"])
+    layout = validate_dataset_root(snapshot)
+    manifest = build_canonical_manifest(snapshot)
+    canonical = {entry["relative_path"] for entry in manifest["files"]}
+    known_meta = {
+        "meta/info.json",
+        "meta/tasks.jsonl",
+        "meta/episodes.jsonl",
+        "meta/episodes_stats.jsonl",
+        "meta/source_provenance.jsonl",
+    }
+    unknown = paths - canonical - NON_CANONICAL_REMOTE_FILES
+    unknown |= {
+        path
+        for path in canonical
+        if path.startswith("meta/") and path not in known_meta
+    }
+    if unknown:
+        raise RemoteNotEmptyError(f"REMOTE REPOSITORY NOT EMPTY: {sorted(unknown)[:5]}")
+    if not canonical <= paths:
+        raise RemoteValidationError(
+            "baseline file listing differs from pinned snapshot"
+        )
+    reload = _official_reload(
+        local_root=str(snapshot),
+        remote_root=str(snapshot),
+        lerobot_python=lerobot_python,
+        expected_tasks=layout["tasks"],
+    )
+    if not reload.get("reload_pass"):
+        raise RemoteValidationError(
+            f"baseline official LeRobot reload failed: {reload.get('errors')}"
+        )
+    return snapshot, manifest
 
 
 def _account(hf_python: str | None) -> str | None:
@@ -307,86 +428,6 @@ def _account(hf_python: str | None) -> str | None:
         return hf_call("whoami", {}, hf_python).get("account")
     except HFWorkerError:
         return None
-
-
-def _decide(
-    state: dict, manifest: dict, *, dry_run: bool, force: bool
-) -> tuple[str, str]:
-    """Return (reported_action, would_action); BLOCKED only stays silent in dry-run."""
-
-    if state.get("private") is not True:
-        if dry_run:
-            return "BLOCKED", "BLOCKED_PUBLIC_REPOSITORY"
-        raise RemotePrivacyError(
-            "HF publication requires an existing private dataset repository; "
-            "refusing to upload to a public repository"
-        )
-
-    canonical = {file["relative_path"]: file for file in manifest["files"]}
-    unknown = [
-        file["path"]
-        for file in state["files"]
-        if file["path"] not in canonical
-        and file["path"] not in NON_CANONICAL_REMOTE_FILES
-    ]
-    if unknown:
-        if dry_run:
-            return "BLOCKED", "UPLOAD"
-        raise RemoteNotEmptyError(
-            "D7 BLOCKED — REMOTE REPOSITORY NOT EMPTY: "
-            f"{len(unknown)} unknown remote file(s), first: {unknown[:5]}"
-        )
-    matches = _remote_matches(state["files"], canonical)
-    tag_matches_head = state.get("v2_1_tag_sha") == state.get("sha")
-    would = (
-        STATUS_UPLOADED
-        if (force or not matches or not tag_matches_head)
-        else STATUS_SKIPPED
-    )
-    if dry_run:
-        return STATUS_DRY_RUN, would
-    return would, would
-
-
-def _remote_matches(remote_files: list[dict], canonical: dict[str, dict]) -> bool:
-    remote_by_path = {file["path"]: file for file in remote_files}
-    if set(remote_by_path) < set(canonical):
-        return False
-    for path, entry in canonical.items():
-        remote = remote_by_path.get(path)
-        if remote is None or remote.get("size") != entry["size_bytes"]:
-            return False
-        lfs_sha = remote.get("lfs_sha256")
-        if lfs_sha is not None and lfs_sha != entry["sha256"]:
-            return False
-    return True
-
-
-def _stage(dataset_root, manifest: dict, readme_needed: bool, layout: dict) -> Path:
-    """Copy canonical files unchanged plus the production dataset card."""
-
-    base = Path(tempfile.mkdtemp(prefix="vla_d7_staging_", dir=_staging_parent()))
-    root = Path(dataset_root)
-    for entry in manifest["files"]:
-        destination = base / entry["relative_path"]
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(root / entry["relative_path"], destination)
-    if readme_needed:
-        (base / "README.md").write_text(build_readme(layout["tasks"], layout["fps"]))
-    return base
-
-
-def _staging_parent() -> str | None:
-    for candidate in ("/data", None):
-        if candidate is None:
-            return None
-        try:
-            probe = Path(candidate)
-            if probe.is_dir() and probe.stat().st_mode & 0o200:
-                return candidate
-        except OSError:
-            continue
-    return None
 
 
 _RELOAD_SCRIPT = r"""
@@ -470,6 +511,12 @@ try:
         fail("remote state/action shape mismatch")
     if lengths != [row["transition_count"] for row in provenance]:
         fail("source range lengths differ from LeRobot episodes")
+    for episode_index, row in enumerate(provenance):
+        start = int(remote.episode_data_index["from"][episode_index])
+        stop = int(remote.episode_data_index["to"][episode_index])
+        task_indices = remote.hf_dataset.select(range(start, stop))["task_index"]
+        if any(remote.meta.tasks[int(index)] != row["task_instruction"] for index in task_indices):
+            fail(f"episode {episode_index} task differs from source provenance")
     if not np.array_equal(state_remote, state_local):
         fail("state arrays differ between local and remote")
     if not np.array_equal(action_remote, action_local):

@@ -88,25 +88,37 @@ def test_missing_tasks_rejected(hf_dataset_root) -> None:
         validate_dataset_root(hf_dataset_root)
 
 
-def test_missing_or_synthetic_provenance_rejected(hf_dataset_root) -> None:
+def test_missing_provenance_rejected(hf_dataset_root) -> None:
     path = hf_dataset_root / "meta" / "source_provenance.jsonl"
-    original = json.loads(path.read_text())
     path.unlink()
     with pytest.raises(InvalidDatasetRootError, match="source_provenance"):
         validate_dataset_root(hf_dataset_root)
-    original["source_dataset_status"] = "SYNTHETIC_TEST_ONLY"
-    path.write_text(json.dumps(original) + "\n")
-    with pytest.raises(InvalidDatasetRootError, match="synthetic"):
-        validate_dataset_root(hf_dataset_root)
 
 
-def test_expert_excluded_provenance_rejected(hf_dataset_root) -> None:
+@pytest.mark.parametrize(
+    "status", ["REVIEW_REQUIRED", "EXCLUDE_FROM_EXPERT_TRAINING", "ARBITRARY", None]
+)
+def test_diagnostic_provenance_statuses_do_not_gate_layout(
+    hf_dataset_root, status
+) -> None:
     path = hf_dataset_root / "meta" / "source_provenance.jsonl"
     row = json.loads(path.read_text())
-    row["expert_training_status"] = "EXCLUDE_FROM_EXPERT_TRAINING"
+    row["expert_training_status"] = status
+    row["source_dataset_status"] = "RAW_CAPTURE_QUARANTINED"
     path.write_text(json.dumps(row) + "\n")
-    with pytest.raises(InvalidDatasetRootError, match="expert-excluded"):
-        validate_dataset_root(hf_dataset_root)
+    assert validate_dataset_root(hf_dataset_root)["episodes"] == 1
+
+
+@pytest.mark.parametrize("status", ["RAW_CAPTURE_QUARANTINED", "ARBITRARY", None])
+def test_source_status_is_diagnostic_only(hf_dataset_root, status) -> None:
+    path = hf_dataset_root / "meta" / "source_provenance.jsonl"
+    row = json.loads(path.read_text())
+    if status is None:
+        row.pop("source_dataset_status")
+    else:
+        row["source_dataset_status"] = status
+    path.write_text(json.dumps(row) + "\n")
+    assert validate_dataset_root(hf_dataset_root)["episodes"] == 1
 
 
 def test_missing_camera_feature_rejected(hf_dataset_root) -> None:

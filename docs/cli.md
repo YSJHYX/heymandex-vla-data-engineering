@@ -15,7 +15,7 @@ MAINLINE 与 OPTIONAL 不可混为一条 eligibility chain。
 | `vla-data export-lerobot` | Direct D2+D3 contiguous runs → LeRobot v2.1 |
 | `vla-data validate-lerobot` | Reconstruct source plan and official reload |
 | `vla-data publish-hf --dry-run` | Local official reload and production publication preflight |
-| `vla-data publish-hf` | Publish one approved split to an existing private HF repo and verify it |
+| `vla-data publish-hf` | Publish one validated split to an existing private HF repo and verify it |
 | `vla-data publish-hf --revision SHA` | Read-only fresh download/reload of a pinned revision |
 
 ### Curation and quality
@@ -60,14 +60,15 @@ Production mode only reads:
 
 ```text
 Curated metadata/trajectory/media
++ D2 cleaning_report.json (captured RAW source-kind marker)
 + quality_report.json
 + quality_mask.npy
 ```
 
 It never discovers annotation or verification roots. Export eligibility is D2 valid, D3 accepted
-with at least one clean row, non-empty collection instruction, and no synthetic/expert-exclude
-marker. `hardware_execution` is provenance, not a substitute for physical transition evidence.
-Export integration eligibility does not imply expert-training approval.
+with at least one clean row, non-empty collection instruction, and a non-synthetic RAW source-kind
+marker. `hardware_execution` and expert/source status fields are diagnostic provenance, not
+substitutes for physical transition evidence or separate approval gates.
 
 Every maximal True run inside one D2 segment becomes one LeRobot episode. No minimum run
 length is configured. `source_end_index` is exclusive. Split assignment hashes
@@ -89,7 +90,7 @@ The exporter writes `export_summary.json`, `export_provenance.jsonl` and indepen
 canonical payload without becoming a model feature. A repeat skips only when source
 fingerprint, runtime identity and independent reload all match.
 The mainline additionally carries `expert_training_status` from Curated into every
-source/run provenance row. `REVIEW_REQUIRED` remains an integration-only status.
+source/run provenance row. Its value, including `REVIEW_REQUIRED`, does not affect publication.
 
 ```bash
 uv run --no-sync vla-data validate-lerobot \
@@ -111,17 +112,31 @@ uv run --no-sync vla-data publish-hf \
   --dry-run
 ```
 
-Remove `--dry-run` only after inspecting the remote state and confirming every source run
-has explicit `expert_training_status=APPROVED_FOR_EXPERT_TRAINING`.
-`REVIEW_REQUIRED` or missing approval blocks upload. Public repos, unknown remote files,
-bad canonical layouts, missing source provenance, 32D physical vectors and missing tasks/videos
-are hard failures. A real
-upload is followed by exact-revision fresh download, SHA-256 comparison and official LeRobot
-reload. Re-run verification independently with `--revision SHA --cache-dir EMPTY_PATH`;
-the verifier refuses a nonempty cache and never uploads. The publisher refreshes the
-existing `v2.1` tag policy to the uploaded commit; a missing or
-stale tag prevents skip. `--force` permits a known payload re-upload but never deletes unknown files or disables
-the privacy gate.
+`publish-hf` is cumulative: its normal baseline is the **current valid remote HEAD**. It
+fresh-downloads and validates that pinned private revision, without walking backward to
+older commits or automatically recovering historical/test episodes. The initial valid
+baseline of `PPPPPilot/VLADexData` is
+`2347702eed03bb3b4a54c1f4598c47c98e804e45` (4 episodes, 1055 frames).
+The parent `b786109f06c985069c57118f5a815eedef684a2e` is legacy test history,
+not part of this cumulative dataset. Historical recovery requires a separate explicit
+maintenance/debug operation; these SHAs are documentation, not publisher constants.
+
+From the valid HEAD, the command deduplicates exact source-run identities, then rebuilds
+the complete LeRobot dataset by
+logical episode with the official writer. Two standalone exports may both contain `chunk-000`;
+their files are never directly overlaid. The same task string may occur in many separate
+episodes. For example, 4 existing episodes plus 2 new ones become 6, while rerunning
+the already-published 003–006 batch appends zero. Dry-run reports `BASELINE`, `INCOMING`,
+`DUPLICATES`, `TO_APPEND`, and
+`MERGED_TOTAL`. An exact rerun returns `NO_NEW_EPISODES`, including with `--force`.
+No expert-status approval is required. Public repos, unknown files, missing baseline
+provenance, 32D vectors, and missing tasks/videos fail closed. Remove `--dry-run` only
+after inspecting the plan and authorizing the network mutation. A real upload is one
+parent-SHA-guarded commit of the fully validated rebuilt dataset, followed by pinned fresh
+download, SHA-256 comparison, and official LeRobot reload. The verifier's `--revision SHA`
+mode never merges or uploads; to compare bytes independently, give it a retained **merged**
+dataset root and an empty `--cache-dir`, not the standalone incoming root. `--force` never
+duplicates source runs or deletes unknown remote files.
 
 ## Task field naming
 

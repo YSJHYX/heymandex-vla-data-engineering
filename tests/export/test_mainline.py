@@ -62,6 +62,12 @@ def _tree(curated_v1_episode: Path, root: Path, count: int = 3):
             segment_offsets=[0, 3],
         )
         metadata_path.write_text(json.dumps(metadata))
+        cleaning_path = destination / "cleaning_report.json"
+        cleaning_path.write_text(
+            json.dumps(
+                {"source_provenance": {"dataset_status": "RAW_CAPTURE_QUARANTINED"}}
+            )
+        )
         trajectory_path = destination / "trajectory.npz"
         with np.load(trajectory_path, allow_pickle=False) as archive:
             trajectory = {key: np.asarray(archive[key]).copy() for key in archive.files}
@@ -144,9 +150,9 @@ def test_direct_export_does_not_read_optional_annotations(curated_v1_episode, tm
 
 def test_synthetic_and_missing_task_sources_are_excluded(curated_v1_episode, tmp_path):
     curated, quality, _ = _tree(curated_v1_episode, tmp_path)
-    synthetic_path = curated / "episode_000001" / "metadata.json"
+    synthetic_path = curated / "episode_000001" / "cleaning_report.json"
     synthetic = json.loads(synthetic_path.read_text())
-    synthetic["source_dataset_status"] = "SYNTHETIC_TEST_ONLY"
+    synthetic["source_provenance"]["dataset_status"] = "SYNTHETIC_TEST_ONLY"
     synthetic_path.write_text(json.dumps(synthetic))
     missing_path = curated / "episode_000002" / "metadata.json"
     missing = json.loads(missing_path.read_text())
@@ -158,6 +164,24 @@ def test_synthetic_and_missing_task_sources_are_excluded(curated_v1_episode, tmp
     sources = {source["episode_id"]: source for source in plan["sources"]}
     assert "SYNTHETIC_TEST_ONLY" in sources["episode_000001"]["reasons"]
     assert "TASK_INSTRUCTION_MISSING" in sources["episode_000002"]["reasons"]
+
+
+@pytest.mark.parametrize(
+    "expert_status",
+    ["REVIEW_REQUIRED", "EXCLUDE_FROM_EXPERT_TRAINING", "ARBITRARY", None],
+)
+def test_diagnostic_statuses_do_not_gate_direct_export(
+    curated_v1_episode, tmp_path, expert_status
+):
+    curated, quality, _ = _tree(curated_v1_episode, tmp_path, count=1)
+    path = curated / "episode_000000" / "metadata.json"
+    metadata = json.loads(path.read_text())
+    metadata["expert_training_status"] = expert_status
+    metadata["source_dataset_status"] = "RAW_CAPTURE_QUARANTINED"
+    path.write_text(json.dumps(metadata))
+    plan = make_mainline_plan(curated, quality)
+    assert len(plan["runs"]) == 2
+    assert all(run["expert_training_status"] == expert_status for run in plan["runs"])
 
 
 def test_source_level_split_never_leaks_runs(curated_v1_episode, tmp_path):

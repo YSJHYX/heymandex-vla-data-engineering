@@ -15,7 +15,6 @@ REPO_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9
 
 # HF-managed files that are not part of the canonical training payload.
 NON_CANONICAL_REMOTE_FILES = frozenset({".gitattributes", "README.md"})
-APPROVED_EXPERT_STATUS = "APPROVED_FOR_EXPERT_TRAINING"
 CAMERA_FEATURES = ("observation.images.head", "observation.images.wrist")
 
 
@@ -103,7 +102,6 @@ def validate_dataset_root(dataset_root: str | Path) -> dict:
         "transition_count",
         "task_instruction",
         "task_instruction_sha256",
-        "source_dataset_status",
     }
     for row in provenance:
         if not isinstance(row, dict) or not required <= row.keys():
@@ -127,15 +125,6 @@ def validate_dataset_root(dataset_root: str | Path) -> dict:
             or end - start != row["transition_count"]
         ):
             raise InvalidDatasetRootError("invalid source provenance row range")
-        status = row["source_dataset_status"]
-        if not isinstance(status, str) or not status:
-            raise InvalidDatasetRootError("source dataset status is missing")
-        if "SYNTHETIC" in status.upper():
-            raise InvalidDatasetRootError(
-                "synthetic source is forbidden in publication"
-            )
-        if row.get("expert_training_status") == "EXCLUDE_FROM_EXPERT_TRAINING":
-            raise InvalidDatasetRootError("expert-excluded source is forbidden")
 
     parquet_files = sorted(root.glob(f"data/{CANONICAL_PARQUET}"))
     if not parquet_files:
@@ -168,10 +157,6 @@ def validate_dataset_root(dataset_root: str | Path) -> dict:
         "provenance": provenance,
         "fps": info.get("fps"),
         "info": info,
-        "publication_approved": all(
-            row.get("expert_training_status") == APPROVED_EXPERT_STATUS
-            for row in provenance
-        ),
         "expert_training_statuses": sorted(
             {str(row.get("expert_training_status")) for row in provenance}
         ),
@@ -227,7 +212,8 @@ def build_readme(tasks: list[str], fps: object) -> str:
         f"tags:\n- lerobot\n- robotics\nfps: {fps}\n---\n\n"
         "# HeymanDex RM65B + SG100 VLA Dataset\n\n"
         "Status: PRIVATE_TRAINING_DATASET\n\n"
-        "Physical storage contract: measured 17D state, effective 17D action, "
+        "Cumulative dataset: each clean rollout is one separate episode, even when "
+        "tasks repeat. Physical storage: measured 17D state, effective 17D action, "
         "head RGB, wrist RGB, and exact collection-time task instructions.\n\n"
         f"Tasks: {tasks}\n"
     )

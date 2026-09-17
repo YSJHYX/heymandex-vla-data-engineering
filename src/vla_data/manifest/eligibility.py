@@ -45,11 +45,6 @@ def inspect_episode(
         record["transition_count_total"] = loaded.transition_count
         if loaded.metadata.get("episode_id") != episode_id:
             reasons.append("CURATED_EPISODE_ID_MISMATCH")
-        if (
-            loaded.metadata.get("expert_training_status")
-            == "EXCLUDE_FROM_EXPERT_TRAINING"
-        ):
-            reasons.append("EXCLUDE_FROM_EXPERT_TRAINING")
         for key in ("session_id", "collection_date", "collection_group"):
             record[key] = loaded.metadata.get(key)
         if any(

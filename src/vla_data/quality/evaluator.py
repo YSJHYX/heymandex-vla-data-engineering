@@ -93,7 +93,6 @@ def evaluate_curated_episode(
             "QUALITY_INVALID: required RGB rows excluded; remaining clean rows retained"
         )
 
-    explicit_status = str(episode.metadata.get("expert_training_status", ""))
     # QUALITY_INVALID rows stay masked out. One bad image must not veto clean
     # rows; no metric, threshold, static policy or mask definition is changed.
     hard_invalid = not d2_validation.passed or not bool(np.any(visual.keep_mask))
@@ -102,12 +101,6 @@ def evaluate_curated_episode(
         exclusion_reasons.extend(d2_validation.errors)
         if not np.all(visual.keep_mask):
             exclusion_reasons.append("required RGB hard-integrity failure")
-    elif explicit_status == "EXCLUDE_FROM_EXPERT_TRAINING":
-        status = "EXCLUDE_FROM_EXPERT_TRAINING"
-        keep[:] = False
-        exclusion_reasons.append(
-            "source episode explicitly excluded from expert training"
-        )
     elif bool(activity["static_episode"]):
         status = "EXCLUDE_FROM_EXPERT_TRAINING"
         keep[:] = False

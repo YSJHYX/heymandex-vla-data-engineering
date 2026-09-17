@@ -3,7 +3,7 @@
 > **SUPERSEDED production guidance.** Historical audit snapshot. Since the simplified production mainline, D4/D5 and
 > the semantic manifest are OPTIONAL only. Current production eligibility is
 > D2 valid + D3 clean + exact collection task + non-synthetic source for export;
-> production HF publication additionally requires explicit expert approval. See README.
+> private HF publication additionally requires validated LeRobot output and a private repo. See README.
 
 Audit date: 2026-09-14. Data Engineering `main@90c2c68`; previous commit
 `434a683`. D5–D7 uncommitted files pre-existed and are preserved. No README

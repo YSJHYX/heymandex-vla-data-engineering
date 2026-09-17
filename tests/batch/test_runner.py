@@ -154,7 +154,7 @@ def test_unified_pipeline_dry_run_projects_planned_episodes(
         assert results[stage].summary["episodes_processed"] == 0
 
 
-def test_unified_pipeline_delegates_all_stages_and_preserves_exclusion(
+def test_unified_pipeline_delegates_all_stages_and_preserves_diagnostic_status(
     raw_dataset_factory, tmp_path
 ) -> None:
     raw = raw_dataset_factory(tmp_path / "raw", (0, 1))
@@ -169,14 +169,14 @@ def test_unified_pipeline_delegates_all_stages_and_preserves_exclusion(
 
     assert tuple(result) == ("curated", "validate", "quality")
     outcomes = {item.episode_id: item.outcome for item in result["quality"].results}
-    assert outcomes["episode_000000"] == "EXCLUDE_FROM_EXPERT_TRAINING"
+    assert outcomes["episode_000000"] == "ACCEPT"
     assert outcomes["episode_000001"] in {"ACCEPT", "ACCEPT_WITH_WARNING"}
     assert (work / "curated" / "dataset_build_summary.json").is_file()
     assert (work / "validation" / "dataset_validation_summary.json").is_file()
     assert (work / "quality" / "dataset_quality_summary.json").is_file()
 
 
-def test_mini_dataset_covers_valid_warning_excluded_and_malformed(
+def test_mini_dataset_covers_valid_warning_diagnostic_and_malformed(
     raw_dataset_factory, synthetic_raw_episode, tmp_path
 ) -> None:
     raw = raw_dataset_factory(tmp_path / "raw", (0, 1, 2))
@@ -209,5 +209,5 @@ def test_mini_dataset_covers_valid_warning_excluded_and_malformed(
     assert outcomes == {
         "episode_000000": "ACCEPT",
         "episode_000001": "ACCEPT_WITH_WARNING",
-        "episode_000002": "EXCLUDE_FROM_EXPERT_TRAINING",
+        "episode_000002": "ACCEPT",
     }

@@ -33,7 +33,12 @@ def dispatch(mode: str, request: dict) -> dict:
     if mode == "repo_state":
         return repo_state(request["repo_id"])
     if mode == "upload":
-        return upload(request["repo_id"], request["staging_dir"])
+        return upload(
+            request["repo_id"],
+            request["staging_dir"],
+            request["parent_commit"],
+            request.get("delete_paths", []),
+        )
     if mode == "download":
         return download(request["repo_id"], request["revision"], request["cache_dir"])
     raise ValueError(f"unknown hf worker mode {mode!r}")
@@ -88,7 +93,9 @@ def repo_state(repo_id: str) -> dict:
     }
 
 
-def upload(repo_id: str, staging_dir: str) -> dict:
+def upload(
+    repo_id: str, staging_dir: str, parent_commit: str, delete_paths: list[str]
+) -> dict:
     from huggingface_hub import HfApi
 
     api = HfApi()
@@ -96,6 +103,8 @@ def upload(repo_id: str, staging_dir: str) -> dict:
         repo_id=repo_id,
         repo_type="dataset",
         folder_path=staging_dir,
+        parent_commit=parent_commit,
+        delete_patterns=delete_paths or None,
         commit_message="Publish private RM65B+SG100 dataset (LeRobot v2.1)",
     )
     refs = api.list_repo_refs(repo_id=repo_id, repo_type="dataset")

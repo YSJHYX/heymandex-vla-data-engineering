@@ -104,9 +104,7 @@ def test_hard_rgb_failure_is_reject(synthetic_raw_episode, tmp_path) -> None:
     assert result.clean_transition_count == 0
 
 
-def test_explicit_expert_exclusion_is_preserved(
-    synthetic_raw_episode, tmp_path
-) -> None:
+def test_expert_status_is_diagnostic_only(synthetic_raw_episode, tmp_path) -> None:
     episode = build_curated_v1(
         synthetic_raw_episode,
         tmp_path / "curated",
@@ -115,8 +113,8 @@ def test_explicit_expert_exclusion_is_preserved(
 
     result = evaluate_curated_episode(episode, tmp_path / "quality")
 
-    assert result.status == "EXCLUDE_FROM_EXPERT_TRAINING"
-    assert result.clean_transition_count == 0
+    assert result.status == "ACCEPT"
+    assert result.clean_transition_count == 2
 
 
 def test_state_action_offset_does_not_reject(synthetic_raw_episode, tmp_path) -> None:

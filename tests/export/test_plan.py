@@ -92,14 +92,14 @@ def test_pending_and_empty_dataset_export(export_tree):
     assert make_plan(export_tree.manifest)["runs"] == []
 
 
-def test_expert_excluded_never_exports(export_tree):
+def test_expert_status_does_not_exclude_optional_export(export_tree):
     path = export_tree.curated / "episode_000000/metadata.json"
     m = json.loads(path.read_text())
     m["expert_training_status"] = "EXCLUDE_FROM_EXPERT_TRAINING"
     path.write_text(json.dumps(m))
     export_tree.refresh()
-    assert all(
-        r["source_episode_id"] != "episode_000000"
+    assert any(
+        r["source_episode_id"] == "episode_000000"
         for r in make_plan(export_tree.manifest)["runs"]
     )
 

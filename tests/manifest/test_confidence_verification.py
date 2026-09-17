@@ -197,7 +197,7 @@ def test_quality_overrides_confidence_one(manifest_tree, outcome):
         review_episode(tree.verification, "episode_000000", status="HUMAN_VERIFIED")
 
 
-def test_explicit_curated_exclusion_still_overrides_auto(manifest_tree):
+def test_curated_expert_status_is_diagnostic_for_manifest(manifest_tree):
     tree = manifest_tree(status="AUTO_LABELED")
     update_confidence(tree, 1.0)
     verify(tree, 0.0)
@@ -205,7 +205,7 @@ def test_explicit_curated_exclusion_still_overrides_auto(manifest_tree):
     metadata = json.loads(path.read_text())
     metadata["expert_training_status"] = "EXCLUDE_FROM_EXPERT_TRAINING"
     path.write_text(json.dumps(metadata))
-    assert "EXCLUDE_FROM_EXPERT_TRAINING" in manifest(tree).records[0]["reason"]
+    assert manifest(tree).records[0]["reason"] == []
 
 
 def test_dry_run_no_writes_or_source_changes(manifest_tree, tmp_path):

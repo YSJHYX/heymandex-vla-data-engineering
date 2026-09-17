@@ -8,15 +8,6 @@ from pathlib import Path
 
 import pytest
 
-
-@pytest.fixture(autouse=True)
-def isolated_publication_staging(tmp_path, monkeypatch):
-    """Mock publication tests must not depend on writable production /data."""
-    monkeypatch.setattr(
-        "vla_data.publish.publisher._staging_parent", lambda: str(tmp_path)
-    )
-
-
 INFO = {
     "codebase_version": "v2.1",
     "fps": 30,
@@ -32,7 +23,24 @@ INFO = {
 @pytest.fixture
 def hf_dataset_root(tmp_path: Path) -> Path:
     root = tmp_path / "dataset"
-    (tmp_path / "export_summary.json").write_text(json.dumps({"fingerprint": "a" * 64}))
+    raw = tmp_path / "captured_raw.npz"
+    raw.write_bytes(b"immutable-captured-episode")
+    curated = tmp_path / "curated" / "episode_000000"
+    curated.mkdir(parents=True)
+    (curated / "metadata.json").write_text(
+        json.dumps(
+            {
+                "source_episode_path": str(raw),
+                "language_instruction": "Place the cable on the table.",
+            }
+        )
+    )
+    (curated / "cleaning_report.json").write_text(
+        json.dumps({"source_provenance": {"dataset_status": "RAW_CAPTURE_QUARANTINED"}})
+    )
+    (tmp_path / "export_summary.json").write_text(
+        json.dumps({"source_mode": "DIRECT_D2_D3", "fingerprint": "a" * 64})
+    )
     (root / "meta").mkdir(parents=True)
     (root / "meta" / "info.json").write_text(json.dumps(INFO))
     (root / "meta" / "tasks.jsonl").write_text(
@@ -44,13 +52,14 @@ def hf_dataset_root(tmp_path: Path) -> Path:
         json.dumps(
             {
                 "source_episode_id": "episode_000000",
+                "curated_path": str(curated),
                 "source_start_index": 0,
                 "source_end_index": 3,
                 "transition_count": 3,
                 "task_instruction": task,
                 "task_instruction_sha256": hashlib.sha256(task.encode()).hexdigest(),
                 "source_dataset_status": "REAL_DATA",
-                "expert_training_status": "APPROVED_FOR_EXPERT_TRAINING",
+                "expert_training_status": "REVIEW_REQUIRED",
             }
         )
         + "\n"

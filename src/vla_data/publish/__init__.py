@@ -10,7 +10,6 @@ from vla_data.publish.local import (
 )
 from vla_data.publish.publisher import (
     AuthRequiredError,
-    PublicationEligibilityError,
     RemoteNotEmptyError,
     RemotePrivacyError,
     RemoteValidationError,
@@ -24,7 +23,6 @@ __all__ = [
     "HFWorkerError",
     "InvalidDatasetRootError",
     "InvalidRepoIdError",
-    "PublicationEligibilityError",
     "RemoteNotEmptyError",
     "RemotePrivacyError",
     "RemoteValidationError",

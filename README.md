@@ -31,7 +31,7 @@ DATASET_NAME=rm65_sg100_mainline
 HF_REPO=REPLACE_OWNER/REPLACE_DATASET
 LEROBOT_PYTHON=/data/projects/vla_ws/openpi/.venv/bin/python
 HF_PYTHON="$LEROBOT_PYTHON"
-export UV_CACHE_DIR=/data/uv-cache
+export UV_CACHE_DIR=/tmp/vla-data-uv-cache
 ```
 
 Run the commands below independently. `UV_CACHE_DIR` avoids this machine's read-only default `/data/uv-cache`; `uv run --no-sync` does not update the lockfile or install packages.
@@ -64,7 +64,7 @@ uv run --no-sync vla-data export-lerobot \
   --lerobot-python "$LEROBOT_PYTHON"
 ```
 
-The direct exporter reads D2/D3 only. It rejects synthetic and expert-excluded sources, empty tasks, invalid D2, rejected D3, and zero clean runs. All derived runs of a `source_episode_id` remain in the same train/val split. `export_summary.json`, `export_provenance.jsonl`, and split-local `meta/source_provenance.jsonl` retain source episode ID, exclusive source range, exact task and SHA-256, source dataset status, and expert-training status. Annotation and D5 files are neither read nor required.
+The direct exporter reads D2/D3 only. It rejects explicitly synthetic sources (from captured RAW source-kind evidence in the D2 cleaning report), empty tasks, invalid D2, rejected D3, and zero clean runs. All derived runs of a `source_episode_id` remain in the same train/val split. `export_summary.json`, `export_provenance.jsonl`, and split-local `meta/source_provenance.jsonl` retain source episode ID, exclusive source range, exact task and SHA-256, source dataset status, and expert-training status. Those status fields are diagnostic only; annotation and D5 files are neither read nor required.
 
 ## 4. Independent local validation
 
@@ -84,13 +84,17 @@ uv run --no-sync vla-data publish-hf \
   --dry-run
 ```
 
-Dry-run performs local layout/17D/camera/task-hash/provenance checks and an official local reload, then (only for approval-eligible data) reads the existing repo's privacy, files, HEAD and `v2.1` tag. It never uploads. `BLOCKED` is a failure, not permission to remove `--dry-run`.
+HF publication is cumulative. Dry-run reruns local `validate-lerobot`, pins and fresh-downloads the existing private repo, validates its complete LeRobot dataset, and reports `BASELINE`, `INCOMING`, `DUPLICATES`, `TO_APPEND`, and `MERGED_TOTAL`. It never uploads. Missing legacy source provenance, unknown remote files, or an invalid baseline fail closed. `BLOCKED` is not permission to remove `--dry-run`.
 
-Production publication requires every source run to carry explicit `expert_training_status=APPROVED_FOR_EXPERT_TRAINING`. This is a future authorized source-metadata state, not an approval granted by this repository or this README. `REVIEW_REQUIRED`, missing status, synthetic, and expert-excluded sources do not authorize upload. Episodes 003–006 are integration fixtures with `REVIEW_REQUIRED`; their successful export/reload is **not** expert-training approval. No approval is inferred from `hardware_execution`, `training_use_status`, or a test PASS.
+The current cumulative dataset is `PPPPPilot/VLADexData`. Its **initial valid cumulative baseline** is commit `2347702eed03bb3b4a54c1f4598c47c98e804e45`: four episodes, 1055 frames, lengths 343/116/286/310, with exact task `grab the ball` and source runs `episode_000003`–`episode_000006`. The earlier commit `b786109f06c985069c57118f5a815eedef684a2e` is `LEGACY_TEST_ONLY` and `NOT_PART_OF_CURRENT_CUMULATIVE_DATASET`: its three historical episodes are not restored or merged. Historical revisions can contain test datasets predating the current provenance/task contract; they are not automatically recovered into the current dataset. These SHAs document history, not a hardcoded publisher baseline.
+
+Standalone exports usually both start at `chunk-000`; uploading today's files over yesterday's paths would overwrite episodes. The normal publisher uses the **current valid remote HEAD** as its only baseline, merges new logical episodes, and rebuilds a complete LeRobot dataset with the official writer. It does not walk backward through historical commits. Each maximal clean rollout remains a separate episode; the same exact task can belong to many episodes. Starting from four episodes, publishing ten new episodes yields 14; publishing 15 more yields 29, not 15. An exact rerun has `TO_APPEND=0`, returns `NO_NEW_EPISODES`, and makes no new commit, even with `--force`. Historical recovery is an exceptional, explicit maintenance/debug operation outside the normal publication path.
+
+Any real dataset that completes D2, D3, LeRobot export, and local validation is eligible for private HF publication. `expert_training_status`, `training_use_status`, and `source_dataset_status` remain provenance only: `REVIEW_REQUIRED`, missing or arbitrary expert status, and `RAW_CAPTURE_QUARANTINED` do not veto valid data. The current 003–006 dataset follows this same path (4 episodes, 1055 frames); no separate approval or publication-purpose mode exists.
 
 ## 6. Private-HF publish — MUTATING NETWORK OPERATION
 
-Only after human review of the dry-run and source approval metadata, run the same command without `--dry-run`. Do **not** run it merely because it appears in this README.
+After inspecting a successful dry-run and obtaining authorization for the mutating network operation, run the same command without `--dry-run`. Do **not** run it merely because it appears in this README.
 
 ```bash
 uv run --no-sync vla-data publish-hf \
@@ -98,26 +102,26 @@ uv run --no-sync vla-data publish-hf \
   --hf-python "$HF_PYTHON" --lerobot-python "$LEROBOT_PYTHON"
 ```
 
-The publisher rejects public/nonexistent repos and unknown remote files; `--force` cannot bypass either safety gate. It copies canonical metadata, Parquet and MP4 bytes unchanged, records the dataset fingerprint, source-export fingerprint (when available), UTC timestamp and exact commit SHA, and maintains the existing `v2.1` tag policy. A successful upload automatically attempts pinned fresh-download validation. Upload alone is not a completed publication if verification fails; preserve the commit SHA and investigate.
+The publisher rejects public/nonexistent repos, unknown remote files, and old datasets without verifiable source-run provenance; `--force` cannot bypass these gates or duplicate episodes. It logically reads old and new episodes, rebuilds all Parquet/video/metadata in isolated local staging, independently validates the merged result, then uploads it in one commit pinned to the observed parent SHA. The incoming export and downloaded baseline are never edited. Video bytes may change from re-encoding; state/action values, exact tasks, episode boundaries, and source identities must not. The new commit receives a pinned fresh-download/hash/official-reload check. Upload alone is not completed publication if that check fails.
 
 ## 7. Independent fresh-download acceptance
 
-Set `HF_REVISION` to the **exact commit SHA printed by the real publish**, not `main` or the moving tag. The verifier requires an absent or empty cache path. This command creates a new empty cache and performs no upload:
+The real publish command performs this check automatically against the validated merged staging dataset. An independent `--revision` recheck remains read-only, but its `--dataset-root` must point to a retained copy of that **merged** dataset, not the standalone incoming export. Set `HF_REVISION` to the exact commit SHA, not `main` or the moving tag. The verifier requires an absent or empty cache path:
 
 ```bash
 HF_REVISION=REPLACE_WITH_EXACT_COMMIT_SHA
 uv run --no-sync vla-data publish-hf \
-  --dataset-root "$EXPORT_ROOT/train" --repo-id "$HF_REPO" \
+  --dataset-root REPLACE_WITH_RETAINED_MERGED_ROOT --repo-id "$HF_REPO" \
   --hf-python "$HF_PYTHON" --lerobot-python "$LEROBOT_PYTHON" \
   --revision "$HF_REVISION" \
   --cache-dir "$(mktemp -d -p "$WORK_ROOT" hf_verify_XXXXXXXX)"
 ```
 
-Acceptance requires the pinned revision to resolve exactly and remain private, all canonical files to match the byte-preserved source manifest, and official LeRobot reload of the fresh snapshot. The reload compares episode/frame counts, 17D float32 arrays, both RGB camera features and per-episode video frames, exact task strings/hashes, provenance, and exclusive source ranges. Byte hashes are appropriate here because this publisher copies canonical files unchanged; any future rewriting publisher must use a stable logical fingerprint instead. Keep the fresh snapshot and evidence with the recorded revision.
+Acceptance requires the pinned revision to resolve exactly and remain private, all canonical files to match the locally rebuilt merged dataset, and official LeRobot reload of the fresh snapshot. The reload compares episode/frame counts, 17D float32 arrays, both RGB camera features and per-episode video frames, exact task strings/hashes, provenance, and exclusive source ranges. Keep the exact commit SHA and validation evidence.
 
 ## Eligibility, optional tooling, and boundary
 
-Export integration eligibility is D2 valid, D3 accepted with a nonempty clean run, nonempty exact task, non-synthetic, and non-expert-excluded. Production HF publication adds explicit expert-training approval. Descriptive dataset statistics may accompany validation; OpenPI-specific normalization, model-side 17→32 padding, training, checkpoints, inference, and robot safety are downstream responsibilities. GPU availability is not a data-engineering gate.
+HF eligibility is D2 valid, D3 accepted with a nonempty clean run, nonempty exact task, non-synthetic, and independently validated LeRobot v2.1 with 17D state/action and both cameras. Descriptive dataset statistics may accompany validation; OpenPI-specific normalization, model-side 17→32 padding, training, checkpoints, inference, and robot safety are downstream responsibilities. GPU availability is not a data-engineering gate.
 
 D4 annotation, D5 verification, LIBERO benchmarks, and the legacy semantic-manifest export remain optional research/diagnostic tools. They are not inputs to direct export, validation, or production eligibility. See [CLI reference](docs/cli.md) and historical audit notes for details. `scripts/smoke_openpi_lerobot.py` remains an optional downstream compatibility check only; it is never a publication prerequisite. Its prior local evidence does not establish remote HF or training readiness.
 

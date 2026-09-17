@@ -42,16 +42,16 @@ def _task_instruction(episode: CuratedEpisode) -> str:
 
 
 def _is_synthetic(episode: CuratedEpisode) -> bool:
-    """Honor every existing explicit synthetic marker conservatively."""
+    """Use captured RAW source-kind evidence, not diagnostic Curated statuses."""
 
-    fields = (
-        episode.metadata.get("source_dataset_status"),
-        episode.metadata.get("expert_training_status"),
-        episode.metadata.get("source_schema_name"),
-    )
-    return any(
-        "SYNTHETIC" in str(value).upper() for value in fields if value is not None
-    )
+    report = json.loads((episode.episode_dir / "cleaning_report.json").read_text())
+    provenance = report.get("source_provenance")
+    if not isinstance(provenance, dict):
+        raise TypeError("missing captured RAW source-kind evidence")
+    raw_status = provenance.get("dataset_status")
+    if not isinstance(raw_status, str) or not raw_status:
+        raise ValueError("missing captured RAW source-kind marker")
+    return "SYNTHETIC" in str(raw_status).upper()
 
 
 def contiguous_runs(
@@ -159,11 +159,6 @@ def make_mainline_plan(
                 source["reasons"].append("D2_INVALID")
             if _is_synthetic(loaded):
                 source["reasons"].append("SYNTHETIC_TEST_ONLY")
-            if (
-                loaded.metadata.get("expert_training_status")
-                == "EXCLUDE_FROM_EXPERT_TRAINING"
-            ):
-                source["reasons"].append("EXCLUDE_FROM_EXPERT_TRAINING")
             try:
                 instruction = _task_instruction(loaded)
             except ValueError:
@@ -246,11 +241,8 @@ def make_mainline_plan(
         source.update(
             split=split,
             eligibility="ELIGIBLE",
-            training_use_status=(
-                "TRAINING_ELIGIBLE_SOURCE"
-                if source["expert_training_status"] == "APPROVED_FOR_EXPERT_TRAINING"
-                else "INTEGRATION_ELIGIBLE_REVIEW_REQUIRED"
-            ),
+            # Historical provenance label only; never a publication gate.
+            training_use_status="INTEGRATION_ELIGIBLE_REVIEW_REQUIRED",
         )
         instruction = candidate["instruction"]
         instruction_hash = hashlib.sha256(instruction.encode("utf-8")).hexdigest()
