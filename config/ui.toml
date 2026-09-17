@@ -1,0 +1,17 @@
+allowed_data_roots = ["/data/vla_runs"]
+allowed_raw_roots = ["/data/vla_runs", "/home/heymandex2025/桌面/vla_raw"]
+state_dir = "/data/vla_runs/.vla_data_ui"
+default_hf_repo = "PPPPPilot/VLADexData"
+uv_cache_dir = "/data/uv-cache"
+lerobot_python = "/data/projects/vla_ws/openpi/.venv/bin/python"
+hf_python = "/data/projects/vla_ws/openpi/.venv/bin/python"
+host = "127.0.0.1"
+port = 8765
+
+# Historical acceptance artifacts are read-only; do not rerun processing on the
+# shared RAW directory, which also contains episodes outside 003–006.
+[run_overrides.batch4_acceptance]
+raw_root = "/home/heymandex2025/桌面/vla_raw"
+export_root = "/data/vla_runs/hf_integration_003_006/lerobot"
+episode_ids = ["episode_000003", "episode_000004", "episode_000005", "episode_000006"]
+read_only = true

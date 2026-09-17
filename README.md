@@ -317,3 +317,28 @@ uv run --no-sync pytest -q
 ```
 
 本仓库不在此流程中执行模型训练或机器人动作。
+
+## Web UI
+
+本地中文操作界面是现有 CLI 的 operator-facing wrapper，**不重写 D2、D3、LeRobot exporter 或 HF publisher**。CLI 仍是工程师可审计、可脚本化的底层接口；UI 和 CLI 调用同一 Python pipeline，生成相同目录结构与报告。不安装前端工具链，也不自动安装/更新 Python 包。
+
+在仓库根目录启动（使用现有 `.venv`，不执行 `uv sync`）：
+
+```bash
+.venv/bin/python -m vla_data.ui
+```
+
+打开 `http://127.0.0.1:8765`。服务默认仅监听本机 loopback；在启动终端按 `Ctrl-C` 关闭。浏览器关闭或刷新不会删除已提交的 backend job，处理记录保存在本机 SQLite。首次使用 HF 功能之前，由机器管理员在终端完成本机 `hf auth login`；UI 不接收、显示或保存 token。
+
+配置集中在 [`config/ui.toml`](config/ui.toml)：允许的数据/RAW 根目录、UI 状态目录、现有 LeRobot/HF Python、UV cache、默认 private HF repo、监听地址/端口。Run 列表只能浏览 allowlist 内的已配置根目录，不能输入任意文件路径。`batch4_acceptance` 是 003–006 历史验收工件的**只读**映射：可看报告、重新执行本地验证和 HF Dry Run，但不可清洗、重导出或正式上传。当前 `PPPPPilot/VLADexData` 只是默认 repo ID，真实 HEAD 总是实时读取，不写死历史 SHA。
+
+数采人员标准操作：
+
+1. 选择 RAW Run，核对 episode、task、head/wrist 相机预览。
+2. 点击「开始数据清洗」，等待物理数据检查和质量检查；`ACCEPT_WITH_WARNING` 可继续，但应查看警告。已有清洗结果可直接使用，重新运行需要二次确认。
+3. 检查 episode 表，再点击「生成 LeRobot 数据集」。默认 validation fraction 为 `0.1`、split seed 为 `17`；小批次不保证产生 val split。
+4. 点击「验证 LeRobot 数据集」。未通过时 HF 阶段被阻断。
+5. 在 Hugging Face 页确认私有 repo 和账户，点击「检查 HF 上传计划」。这是只读 Dry Run，核对重复数、新增数、期望总数和 baseline SHA。`NO_NEW_EPISODES` 表示无需重复上传，上传按钮不可用。
+6. 仅在确有新增 episode 时，点击「上传到 Hugging Face」，核对二次确认弹窗并勾选确认。随后等待固定 commit SHA 的 fresh download、hash 比对和官方 LeRobot 回读均通过；若远端验收失败，不能视作发布成功。
+
+UI 不提供修改 RAW、task、provenance、HF 删除/覆盖、OpenPI 训练或机器人控制。页面请求只允许固定的 pipeline 动作，服务端校验路径与参数，且全局一次只执行一个 job。日志做 token/secret 基础脱敏；出错时保留报告与 job 日志供数据工程人员排查。UI metadata 位于配置的 `state_dir`，不写入 RAW。
