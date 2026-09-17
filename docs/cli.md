@@ -2,7 +2,7 @@
 
 根目录 [README](../README.md) 是 production happy path。本页补充命令语义；
 MAINLINE 与 OPTIONAL 不可混为一条 eligibility chain。
-此机默认 `/data/uv-cache` 可能只读；照 README 设置 `UV_CACHE_DIR` 后运行
+本机约定 `UV_CACHE_DIR=/data/uv-cache`；按 README 设置后使用
 `uv run --no-sync`，不会执行依赖同步。
 
 ## Production CLI — stops at private HF verification
@@ -135,7 +135,10 @@ after inspecting the plan and authorizing the network mutation. A real upload is
 parent-SHA-guarded commit of the fully validated rebuilt dataset, followed by pinned fresh
 download, SHA-256 comparison, and official LeRobot reload. The verifier's `--revision SHA`
 mode never merges or uploads; to compare bytes independently, give it a retained **merged**
-dataset root and an empty `--cache-dir`, not the standalone incoming root. `--force` never
+dataset root and an empty `--cache-dir`, not the standalone incoming root. The current
+publisher automatically checks the pinned upload but does not retain or print its temporary
+merged staging root; this independent command is conditional on separately having an exact
+local copy. `--force` never
 duplicates source runs or deletes unknown remote files.
 
 ## Task field naming
