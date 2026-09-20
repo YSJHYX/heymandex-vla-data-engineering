@@ -1,0 +1,21 @@
+body.help-page {
+  display: block;
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 36px 24px 80px;
+  background: #f7f9fb;
+  color: #172337;
+  font-family: "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
+}
+.help-page main { width: 100%; }
+.help-page a { color: #206b9b; }
+.help-page h1 { margin: 22px 0; font-size: 26px; }
+.guide-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 15px/1.8 "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
+  background: #fff;
+  border: 1px solid #e0e6ec;
+  border-radius: 9px;
+  padding: 24px 30px;
+}

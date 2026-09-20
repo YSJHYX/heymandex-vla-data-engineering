@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 
 from vla_data.ui.config import RunPaths
+from vla_data.ui.reasons import translate_reason
 
 
 def _json(path: Path) -> dict | None:
@@ -104,16 +105,27 @@ def run_snapshot(paths: RunPaths) -> dict:
         d2 = build_rows.get(episode_id, {})
         d3 = quality_rows.get(episode_id, {})
         report = _json(paths.quality_root / episode_id / "quality_report.json") or {}
+        d2_raw = d2.get("message")
+        d3_report_reasons = report.get("exclusion_reasons", []) + report.get(
+            "warnings", []
+        )
+        d3_raw = d3.get("message") or "; ".join(d3_report_reasons)
+        d3_reasons = d3_report_reasons or (d3_raw.split("; ") if d3_raw else [])
         episodes.append(
             {
                 "episode_id": episode_id,
                 "d2": d2.get("status", "PENDING"),
-                "d2_reason": d2.get("message"),
+                "d2_reason": d2_raw,
+                "d2_reasons": [
+                    translate_reason(value)
+                    for value in d2_raw.split("; ")
+                    if value.strip()
+                ]
+                if d2_raw
+                else [],
                 "d3": d3.get("outcome", d3.get("status", "PENDING")),
-                "d3_reason": d3.get("message")
-                or "; ".join(
-                    report.get("exclusion_reasons", []) + report.get("warnings", [])
-                ),
+                "d3_reason": d3_raw,
+                "d3_reasons": [translate_reason(value) for value in d3_reasons],
                 "transitions": d3.get(
                     "transitions_total", report.get("transition_count")
                 ),

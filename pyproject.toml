@@ -27,6 +27,9 @@ packages = ["src/vla_data"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+# Cross-test-module imports (e.g. `from tests.annotation... import ...`) need
+# the repository root on sys.path regardless of invocation directory.
+pythonpath = ["."]
 
 [tool.ruff]
 target-version = "py312"

@@ -6,6 +6,7 @@ import json
 import mimetypes
 import secrets
 import subprocess
+from html import escape
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -18,6 +19,7 @@ from vla_data.ui.jobs import PipelineJobRunner, sanitize
 from vla_data.ui.readers import run_snapshot
 
 STATIC = Path(__file__).with_name("static")
+GUIDE = Path(__file__).resolve().parents[3] / "docs" / "OPERATOR_UI_GUIDE_CN.md"
 
 
 def lerobot_version(interpreter: Path) -> str | None:
@@ -91,7 +93,7 @@ class UIHandler(BaseHTTPRequestHandler):
         }
 
     def _serve_static(self, name: str) -> None:
-        if name not in {"index.html", "app.js", "style.css"}:
+        if name not in {"index.html", "app.js", "style.css", "help.css"}:
             self._error(HTTPStatus.NOT_FOUND, "页面不存在")
             return
         data = (STATIC / name).read_bytes()
@@ -100,6 +102,24 @@ class UIHandler(BaseHTTPRequestHandler):
         content_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
         self._headers(HTTPStatus.OK, f"{content_type}; charset=utf-8", len(data))
         self.wfile.write(data)
+
+    def _serve_help(self) -> None:
+        try:
+            guide = GUIDE.read_text(encoding="utf-8")
+        except OSError:
+            self._error(HTTPStatus.NOT_FOUND, "本地使用说明不存在，请联系数据工程人员")
+            return
+        page = (
+            '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width, initial-scale=1">'
+            "<title>数采人员操作与新电脑部署说明</title>"
+            '<link rel="stylesheet" href="/static/help.css"></head>'
+            '<body class="help-page"><main><a href="/">← 返回操作界面</a>'
+            "<h1>数采人员操作与新电脑部署说明</h1>"
+            f'<pre class="guide-text">{escape(guide)}</pre></main></body></html>'
+        ).encode()
+        self._headers(HTTPStatus.OK, "text/html; charset=utf-8", len(page))
+        self.wfile.write(page)
 
     def do_GET(self) -> None:
         if not self._host_allowed():
@@ -110,7 +130,9 @@ class UIHandler(BaseHTTPRequestHandler):
         try:
             if path == "/":
                 self._serve_static("index.html")
-            elif path in {"/static/app.js", "/static/style.css"}:
+            elif path == "/help":
+                self._serve_help()
+            elif path in {"/static/app.js", "/static/style.css", "/static/help.css"}:
                 self._serve_static(path.rsplit("/", 1)[-1])
             elif path in {"/api/system", "/api/system/status"}:
                 version = lerobot_version(self.server.config.lerobot_python)

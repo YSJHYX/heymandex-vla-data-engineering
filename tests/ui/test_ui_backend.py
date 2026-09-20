@@ -307,11 +307,17 @@ def test_http_routes_csrf_and_static(config: UIConfig) -> None:
         with urlopen(base + "/") as response:
             html = response.read().decode()
             assert "HeymanDex VLA Data Engineering" in html
+            assert 'href="/help"' in html
             assert server.csrf in html
             assert (
                 "frame-ancestors 'none'" in response.headers["Content-Security-Policy"]
             )
-        for asset in ("app.js", "style.css"):
+        with urlopen(base + "/help") as response:
+            guide = response.read().decode()
+            assert response.status == 200
+            assert "每日标准 SOP" in guide
+            assert "数采人员操作与新电脑部署说明" in guide
+        for asset in ("app.js", "style.css", "help.css"):
             with urlopen(base + f"/static/{asset}") as response:
                 assert response.status == 200
                 assert response.read()

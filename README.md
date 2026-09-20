@@ -320,6 +320,8 @@ uv run --no-sync pytest -q
 
 ## Web UI
 
+详细数采人员使用与新电脑部署说明：[`docs/OPERATOR_UI_GUIDE_CN.md`](docs/OPERATOR_UI_GUIDE_CN.md)。本地 UI 左侧也提供无需联网的「使用帮助」入口。
+
 本地中文操作界面是现有 CLI 的 operator-facing wrapper，**不重写 D2、D3、LeRobot exporter 或 HF publisher**。CLI 仍是工程师可审计、可脚本化的底层接口；UI 和 CLI 调用同一 Python pipeline，生成相同目录结构与报告。不安装前端工具链，也不自动安装/更新 Python 包。
 
 在仓库根目录启动（使用现有 `.venv`，不执行 `uv sync`）：
@@ -334,9 +336,9 @@ uv run --no-sync pytest -q
 
 数采人员标准操作：
 
-1. 选择 RAW Run，核对 episode、task、head/wrist 相机预览。
+1. 选择完整数采批次（Run），通常由系统使用其 `raw/` 目录；核对 Episode、Task、头部/腕部相机预览。历史只读 `batch4_acceptance` 使用配置中的外部 RAW override。
 2. 点击「开始数据清洗」，等待物理数据检查和质量检查；`ACCEPT_WITH_WARNING` 可继续，但应查看警告。已有清洗结果可直接使用，重新运行需要二次确认。
-3. 检查 episode 表，再点击「生成 LeRobot 数据集」。默认 validation fraction 为 `0.1`、split seed 为 `17`；小批次不保证产生 val split。
+3. 检查 Episode 表，再点击「生成 LeRobot 数据集」。默认验证集比例为 `0.1`、数据划分随机种子为 `17`；小批次不保证产生 val split。
 4. 点击「验证 LeRobot 数据集」。未通过时 HF 阶段被阻断。
 5. 在 Hugging Face 页确认私有 repo 和账户，点击「检查 HF 上传计划」。这是只读 Dry Run，核对重复数、新增数、期望总数和 baseline SHA。`NO_NEW_EPISODES` 表示无需重复上传，上传按钮不可用。
 6. 仅在确有新增 episode 时，点击「上传到 Hugging Face」，核对二次确认弹窗并勾选确认。随后等待固定 commit SHA 的 fresh download、hash 比对和官方 LeRobot 回读均通过；若远端验收失败，不能视作发布成功。
