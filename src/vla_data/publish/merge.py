@@ -6,15 +6,74 @@ import hashlib
 import json
 import os
 import subprocess
+from collections.abc import Collection
 from pathlib import Path
 
+from vla_data.export.camera_transform import (
+    camera_export_transform_contract,
+    has_current_camera_export_transform,
+)
 from vla_data.publish.local import InvalidDatasetRootError, validate_dataset_root
 
 WORKER = Path(__file__).with_name("_merge_worker.py")
 
+# Baseline revisions exported before the wrist 180-degree camera contract
+# existed. A missing per-row camera contract is only interpreted as "legacy
+# unrotated pixels" for these explicitly registered revisions; any other
+# lineage fails closed instead of guessing an orientation. Entries are full
+# immutable audited SHAs only (never HEAD, branch names, or short SHAs).
+LEGACY_CAMERA_BASELINE_REVISIONS: frozenset[str] = frozenset(
+    {
+        # PPPPPPilot/VLADexData cumulative baseline, 5 episodes, exported
+        # before the wrist 180-degree contract; read-only audit confirmed
+        # 5/5 provenance rows lack camera_transforms.
+        "5557ba134c6d19dd47b468a38a8396c780aeea5e",
+    }
+)
+
 
 class UnverifiableProvenanceError(InvalidDatasetRootError):
     """A source run cannot be identified without inventing provenance."""
+
+
+def _normalized_camera_provenance(
+    source: dict, *, baseline_index: int, legacy_lineage: bool
+) -> dict:
+    """Normalize a baseline row and identify the one supported legacy migration."""
+
+    recorded = source.get("camera_transforms")
+    if recorded is None:
+        if not legacy_lineage:
+            raise UnverifiableProvenanceError(
+                "baseline row lacks a camera transform contract and its "
+                "revision is not a registered pre-camera-transform lineage"
+            )
+        return {
+            **source,
+            "camera_transforms": camera_export_transform_contract(),
+            "camera_transform_migration": {
+                "source_contract": "legacy_unrecorded_orientation",
+                "wrist_rotation_deg_applied": 180,
+                "stage": "cumulative_lerobot_rebuild",
+                "baseline_episode_index": baseline_index,
+            },
+        }
+    if not has_current_camera_export_transform(recorded):
+        raise UnverifiableProvenanceError(
+            "baseline has an unsupported camera transform contract"
+        )
+    return {**source, "camera_transforms": camera_export_transform_contract()}
+
+
+def _require_current_incoming_camera_provenance(source: dict) -> dict:
+    """Incoming data must be rebuilt directly from Curated with this exporter."""
+
+    if not has_current_camera_export_transform(source.get("camera_transforms")):
+        raise UnverifiableProvenanceError(
+            "incoming dataset lacks the current camera transform contract; "
+            "rebuild it directly from Curated"
+        )
+    return {**source, "camera_transforms": camera_export_transform_contract()}
 
 
 def _sha256(path: Path) -> str:
@@ -95,6 +154,7 @@ def plan_logical_merge(
     *,
     baseline_revision: str | None = None,
     source_export_fingerprint: str,
+    legacy_camera_baseline_revisions: Collection[str] | None = None,
 ) -> dict:
     """Return an auditable plan; never conflate task identity with episode identity."""
 
@@ -107,10 +167,25 @@ def plan_logical_merge(
         raise InvalidDatasetRootError(
             "baseline/incoming LeRobot FPS or features differ"
         )
+    registered_legacy = (
+        LEGACY_CAMERA_BASELINE_REVISIONS
+        if legacy_camera_baseline_revisions is None
+        else frozenset(legacy_camera_baseline_revisions)
+    )
+    legacy_lineage = bool(
+        baseline is not None and baseline_revision in registered_legacy
+    )
     prior = baseline["provenance"] if baseline else []
     existing: set[str] = set()
     rows = []
+    baseline_wrist_rotation_indices = []
     for merged_index, source in enumerate(prior):
+        legacy_camera_contract = source.get("camera_transforms") is None
+        source = _normalized_camera_provenance(
+            source, baseline_index=merged_index, legacy_lineage=legacy_lineage
+        )
+        if legacy_camera_contract:
+            baseline_wrist_rotation_indices.append(merged_index)
         key, raw_hash, raw_kind, original_task_hash = _source_key(source)
         if key in existing:
             raise UnverifiableProvenanceError("baseline contains duplicate source runs")
@@ -129,6 +204,7 @@ def plan_logical_merge(
     duplicate_indices = []
     incoming_seen: set[str] = set()
     for local_index, source in enumerate(incoming["provenance"]):
+        source = _require_current_incoming_camera_provenance(source)
         key, raw_hash, raw_kind, original_task_hash = _source_key(source)
         if key in incoming_seen:
             raise UnverifiableProvenanceError("incoming batch repeats a source run")
@@ -153,6 +229,7 @@ def plan_logical_merge(
     old_frames = sum(row["transition_count"] for row in prior)
     appended_frames = sum(incoming_lengths[index] for index in append_indices)
     return {
+        "camera_transforms": camera_export_transform_contract(),
         "baseline_revision": baseline_revision,
         "baseline_episodes": len(prior),
         "baseline_frames": old_frames,
@@ -163,6 +240,8 @@ def plan_logical_merge(
         "to_append": len(append_indices),
         "append_indices": append_indices,
         "appended_frames": appended_frames,
+        "baseline_wrist_rotation_indices": baseline_wrist_rotation_indices,
+        "requires_camera_transform_migration": bool(baseline_wrist_rotation_indices),
         "merged_episodes": len(rows),
         "merged_frames": old_frames + appended_frames,
         "provenance": rows,
@@ -186,6 +265,8 @@ def rebuild_logical_dataset(
         "incoming_root": str(Path(incoming_root).resolve()),
         "baseline_root": str(Path(baseline_root).resolve()) if baseline_root else None,
         "append_indices": plan["append_indices"],
+        "baseline_wrist_rotation_indices": plan["baseline_wrist_rotation_indices"],
+        "camera_transforms": plan["camera_transforms"],
         "output_root": str(output.resolve()),
     }
     env = dict(os.environ)

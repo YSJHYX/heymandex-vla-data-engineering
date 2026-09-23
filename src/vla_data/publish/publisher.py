@@ -9,6 +9,7 @@ import re
 import subprocess
 import tempfile
 import time
+from collections.abc import Collection
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -54,6 +55,7 @@ def publish_dataset(
     dry_run: bool = False,
     force: bool = False,
     verification_cache_dir: str | Path | None = None,
+    legacy_camera_baseline_revisions: Collection[str] | None = None,
 ) -> dict:
     """Publish a complete, locally rebuilt cumulative LeRobot revision."""
 
@@ -104,6 +106,7 @@ def publish_dataset(
                 baseline,
                 baseline_revision=state["sha"] if baseline else None,
                 source_export_fingerprint=source_export_fingerprint,
+                legacy_camera_baseline_revisions=legacy_camera_baseline_revisions,
             )
         except (
             RemoteNotEmptyError,
@@ -145,7 +148,7 @@ def publish_dataset(
             "tasks": layout["tasks"],
             "fps": layout["fps"],
         }
-        if not plan["to_append"]:
+        if not plan["to_append"] and not plan["requires_camera_transform_migration"]:
             return {
                 **evidence,
                 "action": STATUS_DRY_RUN if dry_run else "NO_NEW_EPISODES",

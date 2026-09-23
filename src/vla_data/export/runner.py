@@ -70,6 +70,7 @@ def export_lerobot(
         "split_config": plan.get("split_config"),
         "manifest_root": plan.get("manifest_root"),
         "dataset_name": dataset_name,
+        "camera_transforms": plan["camera_transforms"],
     }
     if dry_run:
         return {**summary, "status": "DRY_RUN"}

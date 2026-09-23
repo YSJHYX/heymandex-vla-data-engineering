@@ -15,6 +15,13 @@ import numpy as np
 import torch
 from lerobot.common.datasets.lerobot_dataset import CODEBASE_VERSION, LeRobotDataset
 
+EXPORT_MODULE_DIR = Path(__file__).resolve().parents[1] / "export"
+sys.path.insert(0, str(EXPORT_MODULE_DIR))
+from camera_transform import (
+    CAMERA_EXPORT_TRANSFORMS,
+    apply_camera_export_transform,
+)
+
 CAMERAS = ("observation.images.head", "observation.images.wrist")
 VECTORS = ("observation.state", "action")
 
@@ -35,7 +42,12 @@ def video_frames(dataset: LeRobotDataset, episode_index: int, key: str):
             yield frame.to_ndarray(format="rgb24")
 
 
-def rows(dataset: LeRobotDataset, episode_index: int):
+def rows(
+    dataset: LeRobotDataset,
+    episode_index: int,
+    *,
+    rotate_legacy_wrist: bool,
+):
     start = int(dataset.episode_data_index["from"][episode_index])
     stop = int(dataset.episode_data_index["to"][episode_index])
     table = dataset.hf_dataset.select(range(start, stop))
@@ -51,10 +63,15 @@ def rows(dataset: LeRobotDataset, episode_index: int):
             require(
                 vector.shape == (17,) and np.isfinite(vector).all(), f"invalid {key}"
             )
+        wrist_image = images[1]
+        if rotate_legacy_wrist:
+            wrist_image = apply_camera_export_transform(
+                wrist_image, camera_role="wrist"
+            )
         yield {
             **vectors,
             CAMERAS[0]: images[0],
-            CAMERAS[1]: images[1],
+            CAMERAS[1]: wrist_image,
             "task": dataset.meta.tasks[int(row["task_index"])],
         }
     require(next(head, None) is None, "source head video is long")
@@ -75,6 +92,10 @@ def validate_source(dataset: LeRobotDataset) -> None:
 
 def build(request: dict) -> dict:
     require(CODEBASE_VERSION == "v2.1", "audited LeRobot v2.1 required")
+    require(
+        request.get("camera_transforms") == CAMERA_EXPORT_TRANSFORMS,
+        "camera export transform contract mismatch",
+    )
     baseline = load(request["baseline_root"]) if request.get("baseline_root") else None
     incoming = load(request["incoming_root"])
     validate_source(incoming)
@@ -92,12 +113,27 @@ def build(request: dict) -> dict:
         ),
         "invalid incoming episode selection",
     )
+    migration_indices = request.get("baseline_wrist_rotation_indices")
+    baseline_count = baseline.num_episodes if baseline is not None else 0
+    require(
+        isinstance(migration_indices, list)
+        and len(migration_indices) == len(set(migration_indices))
+        and all(
+            type(index) is int and 0 <= index < baseline_count
+            for index in migration_indices
+        ),
+        "invalid baseline camera migration selection",
+    )
+    migration_set = set(migration_indices)
     expected = (
-        [(baseline, index) for index in range(baseline.num_episodes)]
+        [
+            (baseline, index, index in migration_set)
+            for index in range(baseline.num_episodes)
+        ]
         if baseline is not None
         else []
     )
-    expected.extend((incoming, index) for index in selected)
+    expected.extend((incoming, index, False) for index in selected)
     require(bool(expected), "merged dataset would be empty")
     root = Path(request["output_root"])
     require(not root.exists(), "rebuild output must not exist")
@@ -117,10 +153,14 @@ def build(request: dict) -> dict:
         image_writer_processes=0,
     )
     lengths = []
-    for source, episode_index in expected:
+    for source, episode_index, rotate_legacy_wrist in expected:
         length = int(source.meta.episodes[episode_index]["length"])
         count = 0
-        for frame in rows(source, episode_index):
+        for frame in rows(
+            source,
+            episode_index,
+            rotate_legacy_wrist=rotate_legacy_wrist,
+        ):
             writer.add_frame(frame)
             count += 1
         require(count == length, "source episode length mismatch")
@@ -135,7 +175,9 @@ def build(request: dict) -> dict:
         == lengths,
         "merged episode boundaries",
     )
-    for merged_index, (source, source_index) in enumerate(expected):
+    for merged_index, (source, source_index, rotate_legacy_wrist) in enumerate(
+        expected
+    ):
         a = int(source.episode_data_index["from"][source_index])
         b = int(source.episode_data_index["to"][source_index])
         c = int(merged.episode_data_index["from"][merged_index])
@@ -161,9 +203,15 @@ def build(request: dict) -> dict:
             for old_frame, new_frame in zip(old_video, new_video, strict=True):
                 require(old_frame.shape == new_frame.shape, "merged camera shape")
                 if count in {0, lengths[merged_index] // 2, lengths[merged_index] - 1}:
+                    expected_frame = old_frame
+                    if rotate_legacy_wrist and key == CAMERAS[1]:
+                        expected_frame = apply_camera_export_transform(
+                            old_frame, camera_role="wrist"
+                        )
                     error = np.mean(
                         np.abs(
-                            old_frame.astype(np.float32) - new_frame.astype(np.float32)
+                            expected_frame.astype(np.float32)
+                            - new_frame.astype(np.float32)
                         )
                     )
                     require(error <= 30, "merged camera frame correspondence")
@@ -178,6 +226,9 @@ def build(request: dict) -> dict:
         "state_shape": [merged.num_frames, 17],
         "action_shape": [merged.num_frames, 17],
         "camera_shapes": {key: list(merged.features[key]["shape"]) for key in CAMERAS},
+        "camera_transforms": CAMERA_EXPORT_TRANSFORMS,
+        "baseline_wrist_rotation_indices": migration_indices,
+        "migrated_baseline_episodes": len(migration_indices),
     }
 
 

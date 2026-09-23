@@ -228,6 +228,47 @@ def test_dry_run_performs_zero_upload(hf_dataset_root, hub) -> None:
     ]
 
 
+def test_dry_run_schedules_legacy_camera_migration_without_new_episode(
+    hf_dataset_root, hub
+) -> None:
+    provenance = hub.state["snapshot"] / "meta/source_provenance.jsonl"
+    rows = [json.loads(line) for line in provenance.read_text().splitlines()]
+    for row in rows:
+        row.pop("camera_transforms")
+    provenance.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    hub.state["files"] = _matching_remote(hub.state["snapshot"])
+
+    result = publish_dataset(
+        hf_dataset_root,
+        REPO,
+        dry_run=True,
+        legacy_camera_baseline_revisions=("a" * 40,),
+    )
+
+    assert result["would_action"] == "UPLOADED"
+    assert result["merge_plan"]["to_append"] == 0
+    assert result["merge_plan"]["requires_camera_transform_migration"] is True
+    assert result["merge_plan"]["baseline_wrist_rotation_indices"] == [0]
+    assert "upload" not in hub.calls
+
+
+def test_dry_run_blocks_unregistered_legacy_camera_baseline(
+    hf_dataset_root, hub
+) -> None:
+    provenance = hub.state["snapshot"] / "meta/source_provenance.jsonl"
+    rows = [json.loads(line) for line in provenance.read_text().splitlines()]
+    for row in rows:
+        row.pop("camera_transforms")
+    provenance.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    hub.state["files"] = _matching_remote(hub.state["snapshot"])
+
+    result = publish_dataset(hf_dataset_root, REPO, dry_run=True)
+
+    assert result["would_action"] == "BLOCKED_INVALID_BASELINE_OR_PROVENANCE"
+    assert "registered pre-camera-transform" in result["reason"]
+    assert "upload" not in hub.calls
+
+
 @pytest.mark.parametrize("failure", ["D2_INVALID", "D3_REJECT", "SYNTHETIC_TEST_ONLY"])
 def test_dry_run_requires_independent_export_validation(
     hf_dataset_root, hub, monkeypatch, failure
@@ -562,6 +603,7 @@ def test_publish_module_never_imports_openpi_or_lerobot() -> None:
             "json",
             "__future__",
             "hashlib",
+            "collections",
             "datetime",
             "os",
             "re",

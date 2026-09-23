@@ -13,6 +13,7 @@ from PIL import Image
 from scripts.smoke_openpi_lerobot import validate_smoke_scope
 from vla_data.cli import main
 from vla_data.export import export_lerobot, validate_lerobot_export
+from vla_data.export.camera_transform import camera_export_transform_contract
 from vla_data.export.plan import make_mainline_plan
 from vla_data.manifest import SplitConfig
 from vla_data.publish import validate_dataset_root
@@ -79,7 +80,16 @@ def _tree(curated_v1_episode: Path, root: Path, count: int = 3):
             ("right_wrist", [(20, 30, 220), (20, 80, 180)]),
         ):
             for index, color in enumerate(colors):
-                Image.new("RGB", (128, 96), color).save(
+                pixels = np.full((96, 128, 3), color, dtype=np.uint8)
+                marker = np.asarray(
+                    [(color[0] + 71) % 256, (color[1] + 113) % 256, 250],
+                    dtype=np.uint8,
+                )
+                pixels[4:36, 7:49] = marker
+                pixels[72:91, 102:123] = np.asarray(
+                    [index * 80 + 30, 240, 40], dtype=np.uint8
+                )
+                Image.fromarray(pixels, mode="RGB").save(
                     destination / "media" / role / "rgb" / f"{index:06d}.jpg"
                 )
 
@@ -131,6 +141,10 @@ def test_direct_d2_d3_runs_preserve_exact_prompt_and_boundaries(
         "observation.images.head",
         "observation.images.wrist",
     }
+    assert plan["camera_transforms"] == camera_export_transform_contract()
+    assert all(
+        run["camera_transforms"] == camera_export_transform_contract() for run in runs
+    )
     assert all("final_instruction" not in run for run in runs)
 
 
@@ -268,6 +282,19 @@ def test_direct_d2_d3_official_lerobot_roundtrip(curated_v1_episode, tmp_path):
     assert len(rows) == 2
     assert all(row["task_instruction"] == prompt for row in rows)
     assert all(row["expert_training_status"] == "REVIEW_REQUIRED" for row in rows)
+    assert all(
+        row["camera_transforms"] == camera_export_transform_contract() for row in rows
+    )
+    for run in check.evidence["runs"]:
+        head = run["videos"]["observation.images.head"]
+        wrist = run["videos"]["observation.images.wrist"]
+        assert head["transform"]["rotation_deg"] == 0
+        assert wrist["transform"] == camera_export_transform_contract()["wrist"]
+        assert all(
+            sample["mean_abs_pixel_difference"]
+            < sample["untransformed_source_difference"]
+            for sample in wrist["samples"]
+        )
     assert validate_dataset_root(output / "train")["episodes"] == 2
 
     remote_copy = tmp_path / "fresh_remote_copy"

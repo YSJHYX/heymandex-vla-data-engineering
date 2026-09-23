@@ -11,6 +11,7 @@ from PIL import Image
 
 from vla_data.annotation.eligibility import EligibilityError, evaluate_eligibility
 from vla_data.batch.discovery import discover_curated_episodes
+from vla_data.export.camera_transform import camera_export_transform_contract
 from vla_data.io.curated_episode import CuratedEpisode
 from vla_data.manifest import SplitConfig
 from vla_data.manifest.schema import OUTPUT_FILES
@@ -297,6 +298,7 @@ def make_mainline_plan(
                     "training_use_status": source["training_use_status"],
                     "curated_path": str(loaded.episode_dir),
                     "images": images,
+                    "camera_transforms": camera_export_transform_contract(),
                     "max_abs_state_cast_error": state_error,
                     "max_abs_action_cast_error": action_error,
                 }
@@ -335,6 +337,7 @@ def make_mainline_plan(
         "features": features,
         "fps": next(iter(fps_values), None),
         "camera_names": list(CAMERAS),
+        "camera_transforms": camera_export_transform_contract(),
         "sources": sources,
         "runs": runs,
         "source_identities": identities,
@@ -485,6 +488,7 @@ def make_plan(manifest_root: str | Path, dataset_name: str = "vla-local") -> dic
                     "final_instruction": row["final_instruction"],
                     "curated_path": str(episode.episode_dir),
                     "images": images,
+                    "camera_transforms": camera_export_transform_contract(),
                     "max_abs_state_cast_error": state_error,
                     "max_abs_action_cast_error": action_error,
                 }
@@ -515,6 +519,7 @@ def make_plan(manifest_root: str | Path, dataset_name: str = "vla-local") -> dic
         "features": features,
         "fps": next(iter(fps_values), None),
         "camera_names": list(CAMERAS),
+        "camera_transforms": camera_export_transform_contract(),
         "sources": [source_map[key] for key in sorted(source_map)],
         "runs": runs,
         "manifest_hashes": {
@@ -556,6 +561,7 @@ def plan_summary(plan: dict) -> dict:
         },
         "selected_transitions": sum(r["transition_count"] for r in plan["runs"]),
         "camera_features": plan["camera_names"],
+        "camera_transforms": plan["camera_transforms"],
         "state_action_shape": [17],
         "task_count": len(
             {

@@ -15,6 +15,19 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+try:
+    from .camera_transform import (
+        CAMERA_EXPORT_TRANSFORMS,
+        CAMERA_FEATURE_TO_EXPORT_ROLE,
+        apply_camera_export_transform,
+    )
+except ImportError:  # Standalone execution in the audited LeRobot environment.
+    from camera_transform import (  # type: ignore[no-redef]
+        CAMERA_EXPORT_TRANSFORMS,
+        CAMERA_FEATURE_TO_EXPORT_ROLE,
+        apply_camera_export_transform,
+    )
+
 
 def require(condition, message):
     if not condition:
@@ -55,10 +68,14 @@ def probe():
     }
 
 
-def rgb(path):
+def decode_rgb(path):
     with Image.open(path) as image:
         require(image.mode == "RGB", "source must be RGB")
         return np.asarray(image, dtype=np.uint8).copy()
+
+
+def rgb(path, camera_role):
+    return apply_camera_export_transform(decode_rgb(path), camera_role=camera_role)
 
 
 def task_instruction(run):
@@ -72,6 +89,10 @@ def task_instruction(run):
 def write(request):
     module = library()
     plan, output = request["plan"], Path(request["output_root"])
+    require(
+        plan.get("camera_transforms") == CAMERA_EXPORT_TRANSFORMS,
+        "camera export transform contract mismatch",
+    )
     for split in ("train", "val"):
         runs = [r for r in plan["runs"] if r["split"] == split]
         if not runs:
@@ -90,6 +111,10 @@ def write(request):
             image_writer_processes=0,
         )
         for run in runs:
+            require(
+                run.get("camera_transforms") == CAMERA_EXPORT_TRANSFORMS,
+                "run camera export transform contract mismatch",
+            )
             with np.load(
                 Path(run["curated_path"]) / "trajectory.npz", allow_pickle=False
             ) as archive:
@@ -109,7 +134,10 @@ def write(request):
                             "finite physical17 required",
                         )
                     frame.update(
-                        {key: rgb(paths[local]) for key, paths in run["images"].items()}
+                        {
+                            key: rgb(paths[local], CAMERA_FEATURE_TO_EXPORT_ROLE[key])
+                            for key, paths in run["images"].items()
+                        }
                     )
                     dataset.add_frame(frame)
             dataset.save_episode()
@@ -117,7 +145,14 @@ def write(request):
     return {"written_runs": len(plan["runs"])}
 
 
-def video_check(path, source_paths, other_paths, expected_shape):
+def video_check(
+    path,
+    source_paths,
+    other_paths,
+    expected_shape,
+    camera_role,
+    other_camera_role,
+):
     import av
 
     selected = sorted({0, len(source_paths) // 2, len(source_paths) - 1})
@@ -138,14 +173,29 @@ def video_check(path, source_paths, other_paths, expected_shape):
     for index in selected:
         decoded = samples[index]
         error = float(
-            np.mean(np.abs(decoded - rgb(source_paths[index]).astype(np.float32)))
+            np.mean(
+                np.abs(
+                    decoded - rgb(source_paths[index], camera_role).astype(np.float32)
+                )
+            )
+        )
+        untransformed_error = float(
+            np.mean(
+                np.abs(decoded - decode_rgb(source_paths[index]).astype(np.float32))
+            )
         )
         alternatives = [
-            float(np.mean(np.abs(decoded - rgb(source_paths[j]).astype(np.float32))))
+            float(
+                np.mean(
+                    np.abs(
+                        decoded - rgb(source_paths[j], camera_role).astype(np.float32)
+                    )
+                )
+            )
             for j in selected
             if j != index
         ]
-        other = rgb(other_paths[index]).astype(np.float32)
+        other = rgb(other_paths[index], other_camera_role).astype(np.float32)
         swap_error = (
             float(np.mean(np.abs(decoded - other)))
             if other.shape == decoded.shape
@@ -164,6 +214,7 @@ def video_check(path, source_paths, other_paths, expected_shape):
             {
                 "frame_index": index,
                 "mean_abs_pixel_difference": error,
+                "untransformed_source_difference": untransformed_error,
                 "other_camera_difference": swap_error,
                 "other_anchor_differences": alternatives,
             }
@@ -172,6 +223,8 @@ def video_check(path, source_paths, other_paths, expected_shape):
         "frame_count": count,
         "fps": fps,
         "resolution": expected_shape,
+        "camera_role": camera_role,
+        "transform": CAMERA_EXPORT_TRANSFORMS[camera_role],
         "samples": evidence,
     }
 
@@ -181,6 +234,10 @@ def validate(request):
 
     module = library()
     plan, output = request["plan"], Path(request["output_root"])
+    require(
+        plan.get("camera_transforms") == CAMERA_EXPORT_TRANSFORMS,
+        "camera export transform contract mismatch",
+    )
     evidence = {"official_reload": "PASS", "runs": [], "total_frames": 0}
     for split in ("train", "val"):
         runs = [r for r in plan["runs"] if r["split"] == split]
@@ -299,6 +356,8 @@ def validate(request):
                     run["images"][key],
                     run["images"][other],
                     plan["features"][key]["shape"],
+                    CAMERA_FEATURE_TO_EXPORT_ROLE[key],
+                    CAMERA_FEATURE_TO_EXPORT_ROLE[other],
                 )
                 require(video_evidence[key]["fps"] == plan["fps"], "video FPS mismatch")
             # Actual standard __getitem__, including both video decoders and task resolution.

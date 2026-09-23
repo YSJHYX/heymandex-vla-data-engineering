@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from vla_data.export.camera_transform import camera_export_transform_contract
+
 INFO = {
     "codebase_version": "v2.1",
     "fps": 30,
@@ -60,6 +62,7 @@ def hf_dataset_root(tmp_path: Path) -> Path:
                 "task_instruction_sha256": hashlib.sha256(task.encode()).hexdigest(),
                 "source_dataset_status": "REAL_DATA",
                 "expert_training_status": "REVIEW_REQUIRED",
+                "camera_transforms": camera_export_transform_contract(),
             }
         )
         + "\n"
