@@ -14,9 +14,25 @@ from urllib.request import Request, urlopen
 import pytest
 
 from vla_data.ui import jobs
-from vla_data.ui.config import UIConfig, load_config
+from vla_data.ui import server as ui_server
+from vla_data.ui.config import HFTarget, UIConfig, load_config
 from vla_data.ui.jobs import PipelineJobRunner, sanitize
 from vla_data.ui.server import UIServer
+
+TEST_TARGETS = (
+    HFTarget(
+        id="test",
+        label="测试",
+        dataset_name="private-dataset",
+        repo_id="operator/private-dataset",
+    ),
+    HFTarget(
+        id="production",
+        label="正式数采",
+        dataset_name="production-dataset",
+        repo_id="operator/production-dataset",
+    ),
+)
 
 
 @pytest.fixture
@@ -34,6 +50,8 @@ def config(tmp_path: Path) -> UIConfig:
         allowed_raw_roots=(root.resolve(),),
         state_dir=root / ".ui",
         default_hf_repo="operator/private-dataset",
+        hf_targets=TEST_TARGETS,
+        default_hf_target="test",
         uv_cache_dir=tmp_path / "uv-cache",
         lerobot_python=Path("/bin/false"),
         hf_python=Path("/bin/false"),
@@ -117,8 +135,14 @@ def test_virtual_environment_entry_path_is_not_resolved(
         f'allowed_raw_roots = ["{config.allowed_raw_roots[0]}"]\n'
         f'state_dir = "{config.state_dir}"\n'
         'default_hf_repo = "operator/private-dataset"\n'
+        'default_hf_target = "test"\n'
         f'uv_cache_dir = "{config.uv_cache_dir}"\n'
         f'lerobot_python = "{venv_python}"\n'
+        "\n[[hf_targets]]\n"
+        'id = "test"\n'
+        'label = "测试"\n'
+        'dataset_name = "private-dataset"\n'
+        'repo_id = "operator/private-dataset"\n'
     )
     loaded = load_config(source)
     assert loaded.lerobot_python == venv_python
@@ -250,6 +274,39 @@ def test_validation_dry_run_and_publish_gates(
         )
 
 
+def test_camera_migration_only_dry_run_can_reach_publish_gate(
+    config: UIConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _ready_runner(config, monkeypatch)
+    _seed(runner, "validate", "PASS", {})
+    dry_run_id = _seed(
+        runner,
+        "hf-dry-run",
+        "PASS",
+        {
+            "dry_run": {
+                "merge_plan": {
+                    "to_append": 0,
+                    "requires_camera_transform_migration": True,
+                },
+                "remote_before": {"sha": "a" * 40},
+            }
+        },
+    )
+    monkeypatch.setattr(runner, "_execute", lambda *_: None)
+
+    job = runner.submit(
+        "sample",
+        "hf-publish",
+        {
+            "confirmation": "我已检查 Dry Run 结果",
+            "dry_run_job_id": dry_run_id,
+        },
+    )
+
+    assert job["status"] == "PENDING"
+
+
 def test_global_publish_lock_and_read_only(
     config: UIConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -317,7 +374,7 @@ def test_http_routes_csrf_and_static(config: UIConfig) -> None:
             assert response.status == 200
             assert "每日标准 SOP" in guide
             assert "数采人员操作与新电脑部署说明" in guide
-        for asset in ("app.js", "style.css", "help.css"):
+        for asset in ("app.js", "style.css", "diagnostics.css", "help.css"):
             with urlopen(base + f"/static/{asset}") as response:
                 assert response.status == 200
                 assert response.read()
@@ -347,6 +404,58 @@ def test_http_routes_csrf_and_static(config: UIConfig) -> None:
                 )
             )
         assert invalid.value.code == 400
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_episode_diagnostics_and_comparison_routes(
+    config: UIConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[tuple] = []
+
+    def diagnostic(paths, episode_id, *, reason=None):
+        seen.append(("diagnostic", paths.name, episode_id, reason))
+        return {"episode_id": episode_id, "selected_reason": reason}
+
+    def comparison(paths, episode_id, baseline):
+        seen.append(("comparison", paths.name, episode_id, baseline))
+        return {"current_episode": episode_id, "baseline_episode": baseline}
+
+    monkeypatch.setattr(ui_server, "episode_diagnostics", diagnostic)
+    monkeypatch.setattr(ui_server, "episode_diagnostics_comparison", comparison)
+    try:
+        server = UIServer(config)
+    except PermissionError:
+        pytest.skip("当前 sandbox 不允许创建 loopback socket")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        path = "/api/runs/sample/episodes/episode_000007/diagnostics"
+        with urlopen(
+            base + path + "?reason=CAMERA_HEAD_CAMERA_UNAVAILABLE"
+        ) as response:
+            value = json.load(response)
+        assert value["selected_reason"] == "CAMERA_HEAD_CAMERA_UNAVAILABLE"
+
+        path = "/api/runs/sample/episodes/episode_000007/comparison"
+        with urlopen(base + path + "?baseline=episode_000006") as response:
+            value = json.load(response)
+        assert value == {
+            "current_episode": "episode_000007",
+            "baseline_episode": "episode_000006",
+        }
+        assert seen == [
+            (
+                "diagnostic",
+                "sample",
+                "episode_000007",
+                "CAMERA_HEAD_CAMERA_UNAVAILABLE",
+            ),
+            ("comparison", "sample", "episode_000007", "episode_000006"),
+        ]
     finally:
         server.shutdown()
         server.server_close()

@@ -1,0 +1,151 @@
+.diagnostic-open {
+  display: block;
+  margin-top: 9px;
+}
+
+.diagnostic-card {
+  border-left: 3px solid #5a94bb;
+}
+
+.diagnostic-root {
+  margin: 20px 0;
+  padding: 18px;
+  border: 1px solid #dce7ef;
+  background: #f8fbfd;
+  border-radius: 7px;
+}
+
+.root-cause-label {
+  margin: 9px 0;
+  color: #a83e49;
+  font-size: 20px;
+  font-weight: 800;
+}
+
+.diagnostic-list {
+  margin: 12px 0;
+  color: #52697d;
+  font-size: 11px;
+}
+
+.diagnostic-list > strong {
+  color: #263e53;
+}
+
+.diagnostic-list ul {
+  margin: 7px 0 0;
+  padding-left: 20px;
+  line-height: 1.7;
+}
+
+.safety-note {
+  padding: 10px 12px;
+  border-radius: 5px;
+  background: #fff3d8;
+  color: #845e16;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.signal-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 13px;
+  margin: 13px 0 22px;
+}
+
+.health-panel {
+  min-width: 0;
+  padding: 15px;
+  border: 1px solid #e1e8ee;
+  border-radius: 7px;
+}
+
+.health-panel > div:not(.health-title) {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 0;
+  border-bottom: 1px solid #edf1f4;
+  font-size: 10px;
+}
+
+.health-panel > div:last-child {
+  border: 0;
+}
+
+.health-panel > div strong {
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.health-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.timeline-wrap {
+  padding: 12px;
+  overflow-x: auto;
+  border: 1px solid #e1e8ee;
+  border-radius: 7px;
+}
+
+.timeline-wrap svg {
+  display: block;
+  width: 100%;
+  min-width: 680px;
+  height: auto;
+  background: #fbfcfd;
+}
+
+.axis {
+  stroke: #9aabba;
+  stroke-width: 1;
+}
+
+.timeline-head,
+.timeline-wrist {
+  fill: none;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.timeline-head {
+  stroke: #c74450;
+}
+
+.timeline-wrist {
+  stroke: #2c83ba;
+}
+
+.invalid-head {
+  stroke: #c74450;
+  stroke-width: 1;
+}
+
+.invalid-wrist {
+  stroke: #2c83ba;
+  stroke-width: 1;
+}
+
+.diagnostic-controls {
+  max-width: 760px;
+}
+
+.diagnostic-controls label {
+  margin: 0;
+}
+
+.diagnostic-controls .small {
+  height: 36px;
+}
+
+@media (max-width: 980px) {
+  .signal-grid {
+    grid-template-columns: 1fr;
+  }
+}

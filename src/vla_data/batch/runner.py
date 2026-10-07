@@ -26,6 +26,10 @@ from vla_data.batch.discovery import (
 from vla_data.batch.status import DatasetRunResult, EpisodeResult
 from vla_data.batch.summary import build_summary, load_summary, write_summary
 from vla_data.cleaning.build_curated_v1 import build_curated_v1
+from vla_data.cleaning.intervention import (
+    classify_interventions,
+    intervention_fingerprint,
+)
 from vla_data.contracts.curated_v1 import CURATED_SCHEMA_NAME, CURATED_SCHEMA_VERSION
 from vla_data.io.curated_episode import CuratedEpisode
 from vla_data.quality.evaluator import evaluate_episode
@@ -65,7 +69,11 @@ def build_curated_dataset(
 
     def process(item: RawEpisodeInput) -> EpisodeResult:
         target = root / item.episode_id
-        if not force and _curated_is_complete(target):
+        if (
+            not force
+            and _curated_is_complete(target)
+            and _intervention_source_matches(item.media_path, target)
+        ):
             count = CuratedEpisode.load(target).transition_count
             return EpisodeResult(
                 item.episode_id,
@@ -124,6 +132,10 @@ def build_curated_dataset(
         sorted((*processed, *issue_results), key=lambda item: item.episode_id)
     )
     summary = build_summary("build", results, discovery.issues)
+    if not dry_run:
+        summary["intervention_stats"] = _build_intervention_stats(
+            results, discovery.episodes
+        )
     summary_path = None
     if not dry_run:
         summary_path = write_summary(root / "dataset_build_summary.json", summary)
@@ -489,6 +501,94 @@ def _curated_is_complete(path: Path) -> bool:
         return validate_curated_episode(CuratedEpisode.load(path)).passed
     except (OSError, ValueError, TypeError, KeyError):
         return False
+
+
+def _intervention_source_matches(media_path: Path, target: Path) -> bool:
+    """A changed annotation must never reuse a pre-intervention D2 output."""
+    sidecar = media_path / "metadata.json"
+    try:
+        source = (
+            json.loads(sidecar.read_text(encoding="utf-8")) if sidecar.exists() else {}
+        )
+        report = json.loads(
+            (target / "cleaning_report.json").read_text(encoding="utf-8")
+        )
+        if not isinstance(source, dict):
+            return False
+        present = any(
+            key in source for key in ("operator_intervention", "operator_interventions")
+        )
+        if not present:
+            return "intervention_metadata_sha256" not in report
+        return report.get("intervention_metadata_sha256") == intervention_fingerprint(
+            source
+        )
+    except (OSError, ValueError, TypeError, KeyError):
+        return False
+
+
+def _build_intervention_stats(
+    results: tuple[EpisodeResult, ...], sources: tuple[RawEpisodeInput, ...]
+) -> dict[str, object]:
+    origins = (
+        "full_clean",
+        "pre_intervention",
+        "between_interventions",
+        "post_intervention",
+    )
+    counts = {origin: 0 for origin in origins}
+    totals = {
+        "raw_episodes_with_intervention": 0,
+        "intervention_intervals": 0,
+        "contaminated_frames": 0,
+        "clean_runs_recovered": 0,
+        "intervention_metadata_invalid_episodes": 0,
+    }
+    for source in sources:
+        sidecar = source.media_path / "metadata.json"
+        if not sidecar.exists():
+            continue
+        try:
+            metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+            if not isinstance(metadata, dict):
+                raise TypeError("RAW metadata is not a JSON object")
+            if not any(
+                key in metadata
+                for key in ("operator_intervention", "operator_interventions")
+            ):
+                continue
+            intervals = metadata.get("operator_interventions")
+            if metadata.get("operator_intervention") is True or intervals:
+                totals["raw_episodes_with_intervention"] += 1
+            if isinstance(intervals, list):
+                totals["intervention_intervals"] += len(intervals)
+            with np.load(source.raw_path, allow_pickle=False) as archive:
+                timestamps = np.asarray(archive["timestamp_ns"])
+            annotation = classify_interventions(metadata, timestamps)
+            if annotation.error is not None:
+                totals["intervention_metadata_invalid_episodes"] += 1
+            else:
+                totals["contaminated_frames"] += int(
+                    np.count_nonzero(annotation.invalid_mask)
+                )
+        except (OSError, ValueError, TypeError, KeyError):
+            totals["intervention_metadata_invalid_episodes"] += 1
+    for result in results:
+        if result.status not in {"SUCCESS", "SKIPPED"} or result.output_path is None:
+            continue
+        root = Path(result.output_path)
+        report = json.loads((root / "cleaning_report.json").read_text(encoding="utf-8"))
+        episode_stats = report.get("intervention_stats")
+        if episode_stats is None:
+            # Historical RAW keeps byte-for-byte episode output compatibility.
+            metadata = json.loads((root / "metadata.json").read_text(encoding="utf-8"))
+            counts["full_clean"] += len(metadata["segment_offsets"]) - 1
+            totals["clean_runs_recovered"] += len(metadata["segment_offsets"]) - 1
+            continue
+        totals["clean_runs_recovered"] += int(episode_stats["clean_runs_recovered"])
+        for origin in origins:
+            counts[origin] += int(episode_stats["runs_by_origin"][origin])
+    return {**totals, "runs_by_origin": counts}
 
 
 def _quality_completion(path: Path, episode_id: str) -> tuple[str, int] | None:

@@ -16,7 +16,11 @@ from vla_data.publish.local import validate_repo_id
 from vla_data.publish.remote import hf_call
 from vla_data.ui.config import UIConfig
 from vla_data.ui.jobs import PipelineJobRunner, sanitize
-from vla_data.ui.readers import run_snapshot
+from vla_data.ui.readers import (
+    episode_diagnostics,
+    episode_diagnostics_comparison,
+    run_snapshot,
+)
 
 STATIC = Path(__file__).with_name("static")
 GUIDE = Path(__file__).resolve().parents[3] / "docs" / "OPERATOR_UI_GUIDE_CN.md"
@@ -93,7 +97,13 @@ class UIHandler(BaseHTTPRequestHandler):
         }
 
     def _serve_static(self, name: str) -> None:
-        if name not in {"index.html", "app.js", "style.css", "help.css"}:
+        if name not in {
+            "index.html",
+            "app.js",
+            "style.css",
+            "diagnostics.css",
+            "help.css",
+        }:
             self._error(HTTPStatus.NOT_FOUND, "页面不存在")
             return
         data = (STATIC / name).read_bytes()
@@ -132,7 +142,12 @@ class UIHandler(BaseHTTPRequestHandler):
                 self._serve_static("index.html")
             elif path == "/help":
                 self._serve_help()
-            elif path in {"/static/app.js", "/static/style.css", "/static/help.css"}:
+            elif path in {
+                "/static/app.js",
+                "/static/style.css",
+                "/static/diagnostics.css",
+                "/static/help.css",
+            }:
                 self._serve_static(path.rsplit("/", 1)[-1])
             elif path in {"/api/system", "/api/system/status"}:
                 version = lerobot_version(self.server.config.lerobot_python)
@@ -149,10 +164,48 @@ class UIHandler(BaseHTTPRequestHandler):
                         "lerobot_distribution_version": version,
                         "hf_python_exists": self.server.config.hf_python.is_file(),
                         "default_hf_repo": self.server.config.default_hf_repo,
+                        "default_hf_target": self.server.config.default_hf_target,
+                        "hf_targets": [
+                            {
+                                "id": target.id,
+                                "label": target.label,
+                                "dataset_name": target.dataset_name,
+                                "repo_id": target.repo_id,
+                            }
+                            for target in self.server.config.hf_targets
+                        ],
                     },
                 )
             elif path == "/api/runs":
                 self._json(HTTPStatus.OK, {"runs": self.server.config.list_runs()})
+            elif path.startswith("/api/runs/") and "/episodes/" in path:
+                parts = path.strip("/").split("/")
+                if (
+                    len(parts) != 6
+                    or parts[:2] != ["api", "runs"]
+                    or parts[3] != "episodes"
+                ):
+                    self._error(HTTPStatus.NOT_FOUND, "路径不存在")
+                    return
+                run_name, episode_id, action = parts[2], parts[4], parts[5]
+                run_paths = self.server.config.run(run_name)
+                query = parse_qs(parsed.query)
+                if action == "diagnostics":
+                    reason = query.get("reason", [None])[0]
+                    self._json(
+                        HTTPStatus.OK,
+                        episode_diagnostics(run_paths, episode_id, reason=reason),
+                    )
+                elif action == "comparison":
+                    baseline = query.get("baseline", [None])[0]
+                    if not baseline:
+                        raise ValueError("comparison 需要 baseline Episode")
+                    self._json(
+                        HTTPStatus.OK,
+                        episode_diagnostics_comparison(run_paths, episode_id, baseline),
+                    )
+                else:
+                    self._error(HTTPStatus.NOT_FOUND, "路径不存在")
             elif path.startswith("/api/runs/") and path.count("/") == 3:
                 name = path.rsplit("/", 1)[-1]
                 self._json(HTTPStatus.OK, run_snapshot(self.server.config.run(name)))
@@ -183,6 +236,9 @@ class UIHandler(BaseHTTPRequestHandler):
                     "repo_id", [self.server.config.default_hf_repo]
                 )[0]
                 validate_repo_id(repo_id)
+                if not self.server.config.is_allowed_hf_repo(repo_id):
+                    self._error(HTTPStatus.FORBIDDEN, "该 HF 仓库不在允许的目标列表中")
+                    return
                 account = hf_call("whoami", {}, str(self.server.config.hf_python))
                 state = hf_call(
                     "repo_state",
@@ -245,6 +301,19 @@ class UIHandler(BaseHTTPRequestHandler):
                 params = payload.get("params", {})
                 if not isinstance(params, dict):
                     raise ValueError("params 必须是对象")
+                if stage in {"hf-dry-run", "hf-publish"}:
+                    repo_id = params.get("repo_id")
+                    try:
+                        validate_repo_id(repo_id if isinstance(repo_id, str) else "")
+                    except ValueError as exc:
+                        self._error(HTTPStatus.BAD_REQUEST, str(exc))
+                        return
+                    if not self.server.config.is_allowed_hf_repo(repo_id):
+                        self._error(
+                            HTTPStatus.FORBIDDEN,
+                            "HF 上传目标必须从允许的数据集目标中选择",
+                        )
+                        return
                 self._json(
                     HTTPStatus.ACCEPTED,
                     self.server.runner.submit(run_name, stage, params),

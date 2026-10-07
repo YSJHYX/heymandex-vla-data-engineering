@@ -38,6 +38,18 @@ def test_operator_controls_and_confirmation_present() -> None:
         "hf-auth",
         "hf-private",
         "publish-result",
+        "diagnostic-card",
+        "diagnostic-summary",
+        "root-cause",
+        "rejection-groups",
+        "signal-health",
+        "camera-timeline",
+        "rejection-reason-filter",
+        "representative-rejections",
+        "copy-diagnostic-report",
+        "comparison-baseline",
+        "compare-episode",
+        "comparison-result",
     } <= parser.ids
 
 
@@ -57,6 +69,47 @@ def test_frontend_safety_state_wiring() -> None:
         assert contract in source
     assert "innerHTML" not in source
     assert "localStorage" not in source
+
+
+def test_episode_diagnostics_are_lazy_and_dependency_free() -> None:
+    html = (STATIC / "index.html").read_text()
+    source = (STATIC / "app.js").read_text()
+
+    assert "拒绝原因分组" in html and "不同分组之间可能存在重叠" in html
+    assert "D2 拒绝证据与根据 RAW 信号推断的诊断分开显示" in html
+    assert "/episodes/${encodeURIComponent(episodeId)}/diagnostics" in source
+    assert "loadEpisodeDiagnostics(entry.episode_id)" in source
+    assert "document.createElementNS" in source
+    assert "timeline.point_count" in source
+    assert "chart.js" not in html.lower()
+    assert "plotly" not in html.lower()
+
+
+def test_diagnostics_have_no_known_user_visible_english_copy() -> None:
+    html = (STATIC / "index.html").read_text()
+    source = (STATIC / "app.js").read_text()
+    combined = html + "\n" + source
+    for phrase in (
+        "View D2 Diagnostics",
+        "Loading diagnostics",
+        "Failed to load diagnostics",
+        "Primary Root Cause",
+        "Suggested subsystem",
+        "Suggested checks",
+        "Why was this Episode rejected",
+        "Diagnostic Report",
+        "Camera Health",
+        "Action Health",
+        "Feedback Health",
+        "Rejection Groups",
+        "Signal Health",
+        "Representative Rejected Rows",
+        "Baseline Episode",
+        '"D2 Status"',
+        '"Candidate transitions"',
+        '"Acceptance rate"',
+    ):
+        assert phrase not in combined
 
 
 def test_chinese_operator_copy_and_offline_help() -> None:

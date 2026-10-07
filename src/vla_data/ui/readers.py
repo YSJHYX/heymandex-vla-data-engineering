@@ -8,7 +8,15 @@ from pathlib import Path
 
 import numpy as np
 
-from vla_data.ui.config import RunPaths
+from vla_data.diagnostics.d2_episode import (
+    compare_episode_diagnostics,
+    diagnose_episode,
+)
+from vla_data.ui.config import EPISODE_ID, RunPaths, inside
+from vla_data.ui.diagnostic_labels import (
+    localize_diagnostics_comparison,
+    localize_episode_diagnostics,
+)
 from vla_data.ui.reasons import translate_reason
 
 
@@ -183,3 +191,53 @@ def run_snapshot(paths: RunPaths) -> dict:
             ],
         },
     }
+
+
+def episode_diagnostics(
+    paths: RunPaths, episode_id: str, *, reason: str | None = None
+) -> dict:
+    """Load one Episode's diagnostics without changing the Run snapshot contract."""
+
+    raw_path, status = _diagnostic_episode(paths, episode_id)
+    report_path = paths.curated_root / episode_id / "cleaning_report.json"
+    return localize_episode_diagnostics(
+        diagnose_episode(
+            run_name=paths.name,
+            raw_path=raw_path,
+            cleaning_report_path=report_path,
+            d2_status=status,
+            reason=reason,
+        )
+    )
+
+
+def episode_diagnostics_comparison(
+    paths: RunPaths, episode_id: str, baseline_id: str
+) -> dict:
+    """Compare two Episodes from the same allowlisted Run."""
+
+    current = episode_diagnostics(paths, episode_id)
+    baseline = episode_diagnostics(paths, baseline_id)
+    return localize_diagnostics_comparison(
+        compare_episode_diagnostics(current, baseline)
+    )
+
+
+def _diagnostic_episode(paths: RunPaths, episode_id: str) -> tuple[Path, str | None]:
+    if not EPISODE_ID.fullmatch(episode_id):
+        raise ValueError("无效的 Episode ID")
+    if paths.episode_ids and episode_id not in paths.episode_ids:
+        raise ValueError("Episode 不属于当前 Run")
+    raw_path = (paths.raw_root / f"{episode_id}.npz").resolve()
+    if not inside(raw_path, (paths.raw_root,)) or not raw_path.is_file():
+        raise ValueError("Episode RAW 不存在或超出允许范围")
+    build = _json(paths.curated_root / "dataset_build_summary.json") or {}
+    status = next(
+        (
+            str(row.get("status"))
+            for row in build.get("results", [])
+            if row.get("episode_id") == episode_id and row.get("status")
+        ),
+        None,
+    )
+    return raw_path, status

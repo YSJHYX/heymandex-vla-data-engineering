@@ -46,6 +46,8 @@ REASONS = {
     "ACTION_TIMESTAMP_NONPOSITIVE": "动作时间戳无效",
     "ACTION_NONFINITE": "动作包含非有限数值",
     "ACTION_COMPONENT_MISMATCH": "机械臂与灵巧手动作不一致",
+    "CAMERA_HEAD_CAMERA_UNAVAILABLE": "头部相机不可用",
+    "CAMERA_WRIST_CAMERA_UNAVAILABLE": "腕部相机不可用",
     "CAUSALITY_PRE_NOT_STRICT": "动作前状态的时间顺序异常",
     "CAUSALITY_POST_NOT_STRICT": "动作后状态的时间顺序异常",
     "INVALID_EPISODE_NAME": "Episode 文件名不符合规则",

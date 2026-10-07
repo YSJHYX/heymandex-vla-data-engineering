@@ -21,6 +21,7 @@ from camera_transform import (
     CAMERA_EXPORT_TRANSFORMS,
     apply_camera_export_transform,
 )
+from writer_options import IMAGE_WRITER_THREADS
 
 CAMERAS = ("observation.images.head", "observation.images.wrist")
 VECTORS = ("observation.state", "action")
@@ -149,7 +150,7 @@ def build(request: dict) -> dict:
             not in {"timestamp", "frame_index", "episode_index", "index", "task_index"}
         },
         use_videos=True,
-        image_writer_threads=0,
+        image_writer_threads=IMAGE_WRITER_THREADS,
         image_writer_processes=0,
     )
     lengths = []

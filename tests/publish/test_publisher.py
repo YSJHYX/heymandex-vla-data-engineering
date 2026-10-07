@@ -604,6 +604,7 @@ def test_publish_module_never_imports_openpi_or_lerobot() -> None:
             "__future__",
             "hashlib",
             "collections",
+            "concurrent",
             "datetime",
             "os",
             "re",

@@ -8,6 +8,7 @@ import os
 import shutil
 import tempfile
 from collections.abc import Sequence
+from itertools import pairwise
 from pathlib import Path
 
 import numpy as np
@@ -18,6 +19,7 @@ from vla_data.cleaning.causal_sync import (
     CausalTransition,
     synchronize_episode,
 )
+from vla_data.cleaning.intervention import intervention_fingerprint
 from vla_data.contracts.curated_v1 import (
     ACTION_REPRESENTATION,
     ACTION_UNIT,
@@ -49,6 +51,10 @@ def build_curated_v1(
     raw = RawEpisode.load(raw_path, media_root=media_root)
     sync = synchronize_episode(raw)
     if not sync.transitions:
+        if sync.intervention.error is not None:
+            raise ValueError(
+                f"INTERVENTION_METADATA_INVALID: {sync.intervention.error}"
+            )
         raise ValueError("D2 rejected every candidate transition; no output published")
 
     destination_root = Path(output_root)
@@ -64,7 +70,7 @@ def build_curated_v1(
         trajectory = _trajectory(sync.transitions)
         metadata = _metadata(
             raw,
-            sync.transitions,
+            sync,
             expert_training_status=expert_training_status,
         )
         report = _cleaning_report(
@@ -144,7 +150,7 @@ def _trajectory(
 
 def _metadata(
     raw: RawEpisode,
-    transitions: Sequence[CausalTransition],
+    sync: CausalSyncResult,
     *,
     expert_training_status: str,
 ) -> dict[str, object]:
@@ -153,8 +159,9 @@ def _metadata(
     language = _optional_scalar(raw, "language_instruction", "")
     dataset_hz = _optional_scalar(raw, "dataset_hz", 0.0)
     hardware_execution = bool(_optional_scalar(raw, "hardware_execution", False))
+    transitions = sync.transitions
 
-    return {
+    metadata = {
         "schema_name": CURATED_SCHEMA_NAME,
         "schema_version": CURATED_SCHEMA_VERSION,
         "episode_id": raw.episode_id,
@@ -185,6 +192,9 @@ def _metadata(
             _optional_scalar(raw, "sg100_feedback_map_status", "UNKNOWN")
         ),
     }
+    if sync.intervention.present:
+        metadata["clean_runs"] = _clean_runs(raw, sync)
+    return metadata
 
 
 def _cleaning_report(
@@ -222,7 +232,7 @@ def _cleaning_report(
             abs(t.head_timestamp_ns - t.wrist_timestamp_ns) for t in transitions
         ],
     }
-    return {
+    report = {
         "curated_schema_name": CURATED_SCHEMA_NAME,
         "curated_schema_version": CURATED_SCHEMA_VERSION,
         "source_episode_path": str(raw.path),
@@ -269,6 +279,54 @@ def _cleaning_report(
         # training trajectory and preserve per-transition thresholdability.
         "transition_temporal_metrics": metrics,
     }
+    if sync.intervention.present:
+        runs = _clean_runs(raw, sync)
+        report["clean_runs"] = runs
+        report["intervention_metadata_sha256"] = intervention_fingerprint(
+            raw.sidecar_metadata
+        )
+        report["intervention_stats"] = {
+            "raw_episodes_with_intervention": int(bool(sync.intervention.intervals)),
+            "intervention_intervals": len(sync.intervention.intervals),
+            "contaminated_frames": int(
+                np.count_nonzero(sync.intervention.invalid_mask)
+            ),
+            "clean_runs_recovered": len(runs),
+            "runs_by_origin": {
+                origin: sum(run["segment_origin"] == origin for run in runs)
+                for origin in (
+                    "full_clean",
+                    "pre_intervention",
+                    "between_interventions",
+                    "post_intervention",
+                )
+            },
+        }
+    return report
+
+
+def _clean_runs(raw: RawEpisode, sync: CausalSyncResult) -> list[dict[str, object]]:
+    transitions = sync.transitions
+    timestamps = raw.require("timestamp_ns")
+    offsets = _segment_offsets(transitions)
+    return [
+        {
+            "source_raw_episode": raw.episode_id,
+            "source_segment_index": index,
+            "segment_start_timestamp_ns": int(
+                timestamps[transitions[start].source_tick_index]
+            ),
+            "segment_end_timestamp_ns": int(
+                timestamps[transitions[end - 1].next_state_tick_index]
+            ),
+            "segment_origin": sync.intervention.origin(
+                int(
+                    sync.intervention.clean_domain[transitions[start].source_tick_index]
+                )
+            ),
+        }
+        for index, (start, end) in enumerate(pairwise(offsets))
+    ]
 
 
 def _copy_selected_media(

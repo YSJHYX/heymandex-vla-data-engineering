@@ -20,6 +20,16 @@ def inside(path: Path, roots: tuple[Path, ...]) -> bool:
 
 
 @dataclass(frozen=True)
+class HFTarget:
+    """One controlled HF dataset profile selectable in the UI."""
+
+    id: str
+    label: str
+    dataset_name: str
+    repo_id: str
+
+
+@dataclass(frozen=True)
 class RunPaths:
     name: str
     run_root: Path
@@ -38,12 +48,20 @@ class UIConfig:
     allowed_raw_roots: tuple[Path, ...]
     state_dir: Path
     default_hf_repo: str
+    hf_targets: tuple[HFTarget, ...]
+    default_hf_target: str
     uv_cache_dir: Path
     lerobot_python: Path
     hf_python: Path
     host: str
     port: int
     run_overrides: dict[str, dict]
+
+    def hf_target_repo_ids(self) -> tuple[str, ...]:
+        return tuple(target.repo_id for target in self.hf_targets)
+
+    def is_allowed_hf_repo(self, repo_id: object) -> bool:
+        return isinstance(repo_id, str) and repo_id in self.hf_target_repo_ids()
 
     def run(self, name: str) -> RunPaths:
         if not RUN_NAME.fullmatch(name) or name in {".", ".."}:
@@ -109,6 +127,40 @@ class UIConfig:
         return sorted(names)
 
 
+def _load_hf_targets(value: dict) -> tuple[HFTarget, ...]:
+    """Validate the controlled HF selector profiles from the UI config."""
+
+    entries = value.get("hf_targets", [])
+    if not entries:
+        raise ValueError("至少配置一个 HF 数据集目标")
+    targets: list[HFTarget] = []
+    seen_ids: set[str] = set()
+    seen_repos: set[str] = set()
+    for entry in entries:
+        target_id = str(entry.get("id", "")).strip()
+        label = str(entry.get("label", "")).strip()
+        dataset_name = str(entry.get("dataset_name", "")).strip()
+        repo_id = str(entry.get("repo_id", "")).strip()
+        if not target_id or not RUN_NAME.fullmatch(target_id):
+            raise ValueError(
+                "HF 目标 id 不能为空且只能包含字母、数字、点、下划线或连字符"
+            )
+        if not label or not dataset_name:
+            raise ValueError(f"HF 目标 {target_id} 缺少 label 或 dataset_name")
+        validate_repo_id(repo_id)
+        if target_id in seen_ids:
+            raise ValueError(f"HF 目标 id 重复：{target_id}")
+        if repo_id in seen_repos:
+            raise ValueError(f"HF 目标 repo_id 重复：{repo_id}")
+        seen_ids.add(target_id)
+        seen_repos.add(repo_id)
+        targets.append(HFTarget(target_id, label, dataset_name, repo_id))
+    default_target = str(value.get("default_hf_target", "")).strip()
+    if default_target not in seen_ids:
+        raise ValueError("default_hf_target 必须是已配置的 HF 目标 id")
+    return tuple(targets)
+
+
 def load_config(path: str | Path) -> UIConfig:
     source = Path(path).resolve(strict=True)
     with source.open("rb") as stream:
@@ -122,6 +174,7 @@ def load_config(path: str | Path) -> UIConfig:
         raise ValueError("UI 状态目录必须位于数据根目录内")
     repo = value["default_hf_repo"]
     validate_repo_id(repo)
+    targets = _load_hf_targets(value)
     host = str(value.get("host", "127.0.0.1"))
     if host not in {"127.0.0.1", "localhost"}:
         raise ValueError("本地 UI 仅允许绑定 127.0.0.1")
@@ -136,6 +189,8 @@ def load_config(path: str | Path) -> UIConfig:
         raw_roots,
         state_dir,
         repo,
+        targets,
+        str(value.get("default_hf_target", "")).strip(),
         Path(value["uv_cache_dir"]).resolve(),
         # Invoking the venv symlink path is essential: resolving it to the base
         # interpreter loses the virtual environment's site-packages.

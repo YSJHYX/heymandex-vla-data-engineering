@@ -338,7 +338,7 @@ uv run --no-sync pytest -q
 
 1. 选择完整数采批次（Run），通常由系统使用其 `raw/` 目录；核对 Episode、Task、头部/腕部相机预览。历史只读 `batch4_acceptance` 使用配置中的外部 RAW override。
 2. 点击「开始数据清洗」，等待物理数据检查和质量检查；`ACCEPT_WITH_WARNING` 可继续，但应查看警告。已有清洗结果可直接使用，重新运行需要二次确认。
-3. 检查 Episode 表，再点击「生成 LeRobot 数据集」。默认验证集比例为 `0.1`、数据划分随机种子为 `17`；小批次不保证产生 val split。
+3. 检查 Episode 表；失败项可点击「查看 D2 诊断」，分别核对原始 D2 rejection evidence 与只读 RAW-derived root cause。Rejection Groups 可能重叠，RAW 诊断不会替换 D2 reason，也不能作为降低清洗门槛的依据。确认后再点击「生成 LeRobot 数据集」。默认验证集比例为 `0.1`、数据划分随机种子为 `17`；小批次不保证产生 val split。
 4. 点击「验证 LeRobot 数据集」。未通过时 HF 阶段被阻断。
 5. 在 Hugging Face 页确认私有 repo 和账户，点击「检查 HF 上传计划」。这是只读 Dry Run，核对重复数、新增数、期望总数和 baseline SHA。`NO_NEW_EPISODES` 表示无需重复上传，上传按钮不可用。
 6. 仅在确有新增 episode 时，点击「上传到 Hugging Face」，核对二次确认弹窗并勾选确认。随后等待固定 commit SHA 的 fresh download、hash 比对和官方 LeRobot 回读均通过；若远端验收失败，不能视作发布成功。

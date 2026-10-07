@@ -61,6 +61,17 @@ def test_current_dynamic_and_diagnostic_codes_translated(code: str) -> None:
     assert translate_reason(code)["summary"] != "未知数据问题"
 
 
+def test_camera_unavailable_codes_have_specific_operator_labels() -> None:
+    assert (
+        translate_reason("CAMERA_HEAD_CAMERA_UNAVAILABLE")["summary"]
+        == "头部相机不可用"
+    )
+    assert (
+        translate_reason("CAMERA_WRIST_CAMERA_UNAVAILABLE")["summary"]
+        == "腕部相机不可用"
+    )
+
+
 def test_unknown_reason_fallback_preserves_evidence() -> None:
     result = translate_reason("NEW_UNKNOWN_CODE: engineer detail")
     assert result == {

@@ -21,12 +21,14 @@ try:
         CAMERA_FEATURE_TO_EXPORT_ROLE,
         apply_camera_export_transform,
     )
+    from .writer_options import IMAGE_WRITER_THREADS
 except ImportError:  # Standalone execution in the audited LeRobot environment.
     from camera_transform import (  # type: ignore[no-redef]
         CAMERA_EXPORT_TRANSFORMS,
         CAMERA_FEATURE_TO_EXPORT_ROLE,
         apply_camera_export_transform,
     )
+    from writer_options import IMAGE_WRITER_THREADS  # type: ignore[no-redef]
 
 
 def require(condition, message):
@@ -107,7 +109,7 @@ def write(request):
                 for key, feature in plan["features"].items()
             },
             use_videos=True,
-            image_writer_threads=0,
+            image_writer_threads=IMAGE_WRITER_THREADS,
             image_writer_processes=0,
         )
         for run in runs:

@@ -2,6 +2,9 @@ allowed_data_roots = ["/data/vla_runs"]
 allowed_raw_roots = ["/data/vla_runs", "/home/heymandex2025/桌面/vla_raw"]
 state_dir = "/data/vla_runs/.vla_data_ui"
 default_hf_repo = "PPPPPilot/VLADexData"
+# Controlled HF dataset targets for the UI selector. The UI never accepts an
+# arbitrary repo_id; it only maps one of these profiles to its repo_id.
+default_hf_target = "test"
 uv_cache_dir = "/data/uv-cache"
 lerobot_python = "/data/projects/vla_ws/openpi/.venv/bin/python"
 hf_python = "/data/projects/vla_ws/openpi/.venv/bin/python"
@@ -15,3 +18,16 @@ raw_root = "/home/heymandex2025/桌面/vla_raw"
 export_root = "/data/vla_runs/hf_integration_003_006/lerobot"
 episode_ids = ["episode_000003", "episode_000004", "episode_000005", "episode_000006"]
 read_only = true
+
+
+[[hf_targets]]
+id = "test"
+label = "测试"
+dataset_name = "VLADexData"
+repo_id = "PPPPPilot/VLADexData"
+
+[[hf_targets]]
+id = "production"
+label = "正式数采"
+dataset_name = "BiyiVLA"
+repo_id = "PPPPPilot/BiyiVLA"

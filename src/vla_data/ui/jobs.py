@@ -179,9 +179,9 @@ class PipelineJobRunner:
             or not isinstance(fraction, (float, int))
             or not 0 <= fraction <= 1
         ):
-            raise ValueError("Validation fraction 必须在 0 到 1 之间")
+            raise ValueError("验证集比例必须在 0 到 1 之间")
         if isinstance(seed, bool) or not isinstance(seed, int):
-            raise TypeError("Split seed 必须为整数")
+            raise TypeError("数据划分随机种子必须为整数")
         repo_id = str(params.get("repo_id", self.config.default_hf_repo))
         validate_repo_id(repo_id)
         fingerprint = self._fingerprints(paths.export_root)
@@ -210,7 +210,9 @@ class PipelineJobRunner:
                 raise ValueError("没有可用于本次上传的成功 Dry Run")
             evidence = (dry["summary"] or {}).get("dry_run", {})
             plan = evidence.get("merge_plan", {})
-            if not plan.get("to_append", 0):
+            if not plan.get("to_append", 0) and not plan.get(
+                "requires_camera_transform_migration", False
+            ):
                 raise ValueError("当前批次已全部存在于 HF，无需重复上传")
             if dry["context"].get("fingerprints") != fingerprint:
                 raise ValueError("本地导出已变化，请重新执行验证和 Dry Run")

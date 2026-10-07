@@ -214,6 +214,15 @@ export UV_CACHE_DIR=/data/uv-cache
 
 表格逐条显示物理检查、质量检查、有效帧数和结果。点击“查看原因”会看到中文摘要，例如“缺少腕部相机数据”“没有可用于训练的有效数据区间”“状态和动作的时间顺序异常”。需要排错时再展开“高级信息”，查看技术代码和原始详情。未知技术代码会显示“未知数据问题”，不能据此自行猜测原因。不要编辑 RAW、补帧、用命令值冒充实测状态；把 Episode 编号和原始详情交给工程人员。
 
+### D2 Diagnostic Summary
+
+点击 Episode 行里的“查看 D2 诊断”，系统才会按需读取该单个 Episode；不会在打开 Run 时批量分析全部 RAW。诊断页严格区分两类信息：
+
+- **D2 rejection evidence**：来自现有 `cleaning_report.json` 或只读执行的原始 D2 同步逻辑，包含 candidate、accepted、原始 rejection code 和代表 rejected rows。
+- **RAW-derived diagnosis**：从 RAW timestamp、valid、frame index、action 和 feedback 信号推导的健康状态，例如 `HEAD CAMERA FROZEN`。它用于定位 producer 故障，不是新的 D2 rejection reason。
+
+“Rejection Groups (may overlap)”表示 ACTION、FEEDBACK、CAUSALITY、CAMERA 计数可能重叠，不能自行相加当成严格漏斗。Camera timeline 最多显示有限数量的下采样点，不会解码全部 JPEG。需要远程排查时点击“复制 Diagnostic Report”。若显示 `FROZEN`，应检查 RealSense pipeline、D455 capture thread、latest-frame update 和 USB/device state；**不要为了让坏数据通过而降低 D2 camera checks**。
+
 ## 16. Stage 3：LeRobot 导出
 
 点击“生成 LeRobot 数据集”，只会导出连续的有效区间，不会把被排除的中间段拼接起来。高级选项通常保持默认：验证集比例 `0.1`（约 10% 来源进入验证集；`0` 表示不生成验证集），数据划分随机种子 `17`（相同输入和种子得到相同划分）。小批次可能没有 `val/`，不能保证一定产生验证集。数据概览的“原始数采 Episode”是自动统计值，不是可修改参数。导出状态并不等于本地验证已通过。

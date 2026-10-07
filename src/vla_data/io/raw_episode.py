@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +18,7 @@ class RawEpisode:
     path: Path
     media_root: Path
     arrays: Mapping[str, np.ndarray]
+    sidecar_metadata: Mapping[str, object]
 
     @classmethod
     def load(
@@ -43,10 +45,20 @@ class RawEpisode:
         for array in arrays.values():
             array.setflags(write=False)
 
+        sidecar_path = resolved_media / "metadata.json"
+        sidecar: dict[str, object] = {}
+        if sidecar_path.exists():
+            with sidecar_path.open(encoding="utf-8") as stream:
+                loaded = json.load(stream)
+            if not isinstance(loaded, dict):
+                raise ValueError(f"RAW metadata must be a JSON object: {sidecar_path}")
+            sidecar = loaded
+
         return cls(
             path=raw_path.resolve(),
             media_root=resolved_media.resolve(),
             arrays=MappingProxyType(arrays),
+            sidecar_metadata=MappingProxyType(sidecar),
         )
 
     def require(self, key: str) -> np.ndarray:
@@ -70,6 +82,7 @@ class RawEpisode:
         values = {
             key: array.item() for key, array in self.arrays.items() if array.ndim == 0
         }
+        values.update(self.sidecar_metadata)
         return MappingProxyType(values)
 
     @property

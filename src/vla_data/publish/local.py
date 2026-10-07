@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 CANONICAL_PARQUET = "**/*.parquet"
@@ -163,11 +164,22 @@ def validate_dataset_root(dataset_root: str | Path) -> dict:
     }
 
 
+def _sha256_file(path: Path) -> tuple[int, str]:
+    """Streamed file digest; never loads a canonical artifact into memory."""
+
+    digest = hashlib.sha256()
+    size = 0
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(4 << 20), b""):
+            digest.update(chunk)
+            size += len(chunk)
+    return size, digest.hexdigest()
+
+
 def build_canonical_manifest(dataset_root: str | Path) -> dict:
     """Deterministic SHA-256 manifest over the canonical training payload."""
 
     root = Path(dataset_root)
-    entries = []
     paths = sorted(
         [
             *(root / METADATA_DIR).rglob("*"),
@@ -176,20 +188,23 @@ def build_canonical_manifest(dataset_root: str | Path) -> dict:
         ],
         key=lambda p: p.relative_to(root).as_posix(),
     )
-    for path in paths:
-        if not path.is_file():
-            continue
-        relative = path.relative_to(root).as_posix()
-        data = path.read_bytes()
-        entries.append(
-            {
-                "relative_path": relative,
-                "size_bytes": len(data),
-                "sha256": hashlib.sha256(data).hexdigest(),
-            }
-        )
-    if not entries:
+    files = [path for path in paths if path.is_file()]
+    if not files:
         raise InvalidDatasetRootError(f"no canonical files found under {root}")
+    # hashlib releases the GIL on large buffers, so a small bounded thread pool
+    # overlaps digest CPU with NVMe reads; 4 is the measured plateau. Order is
+    # fixed by the sorted path list (map preserves input order), so the
+    # manifest is byte-identical to the previous serial implementation.
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        digests = list(pool.map(_sha256_file, files))
+    entries = [
+        {
+            "relative_path": path.relative_to(root).as_posix(),
+            "size_bytes": size,
+            "sha256": sha256,
+        }
+        for path, (size, sha256) in zip(files, digests, strict=True)
+    ]
     fingerprint = hashlib.sha256(
         json.dumps(entries, sort_keys=True).encode("utf-8")
     ).hexdigest()
