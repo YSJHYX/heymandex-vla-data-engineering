@@ -130,6 +130,10 @@ def write(request):
                         "action": action[index].astype(np.float32),
                         "task": task_instruction(run),
                     }
+
+                    #取反以对齐真机反馈范围
+                    frame["action"][12] *= -1.0
+                    frame["action"][14] *= -1.0
                     for key in ("observation.state", "action"):
                         require(
                             frame[key].shape == (17,) and np.isfinite(frame[key]).all(),
@@ -339,6 +343,9 @@ def validate(request):
                     expected = archive[source][
                         run["source_curated_start"] : run["source_curated_end"] + 1
                     ].astype(np.float32)
+                    if key == "action":
+                        expected[:, 12] *= -1.0
+                        expected[:, 14] *= -1.0
                     values = torch.stack(table[key]).numpy()
                     require(
                         values.shape == (count, 17) and values.dtype == np.float32,
@@ -346,7 +353,7 @@ def validate(request):
                     )
                     require(
                         np.isfinite(values).all() and np.array_equal(values, expected),
-                        "vectors differ from pure source float32 cast",
+                        "vectors differ from float32 source with action[12] and action[14] negated",
                     )
             video_evidence = {}
             keys = list(run["images"])
@@ -444,6 +451,8 @@ def openpi_smoke(request):
                 actions = archive["robot_qcmd_17d_rad"][
                     run["source_curated_start"] : run["source_curated_end"] + 1
                 ].astype(np.float32)
+                actions[:, 12] *= -1.0
+                actions[:, 14] *= -1.0
             for local in sorted({0, count - 1}):
                 sample = dataset[start + local]
                 expected = actions[
