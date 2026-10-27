@@ -172,7 +172,7 @@ class PipelineJobRunner:
         dataset_name = str(params.get("dataset_name", f"rm65_sg100_{run_name}"))
         if stage == "export" and not DATASET_NAME.fullmatch(dataset_name):
             raise ValueError("数据集名称只允许字母、数字、下划线、短横线和点")
-        fraction = params.get("validation_fraction", 0.1)
+        fraction = params.get("validation_fraction", 0.0)
         seed = params.get("split_seed", 17)
         if (
             isinstance(fraction, bool)

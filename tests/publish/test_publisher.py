@@ -614,6 +614,8 @@ def test_publish_module_never_imports_openpi_or_lerobot() -> None:
             "tempfile",
             "time",
             "shutil",
+                "socket",
             "huggingface_hub",
+                "urllib",
             "vla_data",
         }, (source.name, modules)

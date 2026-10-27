@@ -107,8 +107,8 @@ allowed_raw_roots = ["/data/vla_runs"]
 state_dir = "/data/vla_runs/.vla_data_ui"
 default_hf_repo = "PPPPPilot/VLADexData"
 uv_cache_dir = "/data/uv-cache"
-lerobot_python = "/实际存在的/已审计环境/bin/python"
-hf_python = "/实际存在的/已审计环境/bin/python"
+lerobot_python = "/home/c/.local/bin/vla-lerobot-python"
+hf_python = "/home/c/.local/share/vla-lerobot/bin/python"
 host = "127.0.0.1"
 port = 8765
 ```
@@ -188,15 +188,29 @@ EXPORT_ROOT   /data/vla_runs/<run_name>/work/lerobot
 
 ## 12. 如何启动 UI
 
-在项目根目录，用已有项目 `.venv` 启动：
+在远端电脑终端进入项目目录，使用已有项目 `.venv` 和已更新的本机路径配置启动：
 
 ```bash
 cd "$HOME/heymandex-vla-data-engineering"
 export UV_CACHE_DIR=/data/uv-cache
-.venv/bin/python -m vla_data.ui
+.venv/bin/python -m vla_data.ui --config config/ui.toml
 ```
 
-浏览器打开 <http://127.0.0.1:8765>。这是本机地址，其他电脑不能直接访问。要停止服务，在启动终端按 `Ctrl-C`；不要在处理中强制断电。若 `config/ui.toml` 不在当前工作目录，请先 `cd` 到项目根目录。页面左侧“使用帮助”可离线打开本说明。
+当前远端数据根目录为 `/data/vla_runs`。已确认 smoke test 批次 `biyi_smoke5` 存在，包含 5 个 RAW Episode；在 UI 的 Run 下拉框选择 `biyi_smoke5`，对应路径为：
+
+```text
+RAW_ROOT      /data/vla_runs/biyi_smoke5/raw
+WORK_ROOT     /data/vla_runs/biyi_smoke5/work
+CURATED_ROOT  /data/vla_runs/biyi_smoke5/work/curated
+QUALITY_ROOT  /data/vla_runs/biyi_smoke5/work/quality
+EXPORT_ROOT   /data/vla_runs/biyi_smoke5/work/lerobot
+```
+
+UI 状态保存在 `/data/vla_runs/.vla_data_ui`，缓存使用 `/data/uv-cache`。运行账号 `c` 需要对 UI 状态、该批次 `work` 和缓存目录有写权限；RAW 只需读取，不应为启动 UI 而改写。
+
+项目 `config/ui.toml` 与远端专用配置 `~/.config/vla-data/ui.toml` 已对齐上述数据路径。LeRobot 使用 `/home/c/.local/bin/vla-lerobot-python`；HF 使用同一环境的实际 Python `/home/c/.local/share/vla-lerobot/bin/python`，避免启动包装器强制注入某个 VPN 的本地代理端口。HF 子进程会保留可用的本地代理；如果配置的 loopback 代理没有监听，则自动忽略该代理并走当前系统网络（包括路由器 VPN）。也可从任意目录执行 `~/.local/bin/vla-data-ui`，使用相同的远端配置启动。
+
+在远端电脑的浏览器打开 <http://127.0.0.1:8765>。这是远端电脑的本机地址，其他电脑不能直接访问。要停止服务，在启动终端按 `Ctrl-C`；不要在处理中强制断电。页面左侧“使用帮助”可离线打开本说明。
 
 ## 13. Stage 1：选择数采批次
 
