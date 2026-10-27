@@ -88,6 +88,21 @@ REQUIRED_FIELDS: tuple[str, ...] = (
 )
 
 
+def action_hand_domain(raw: RawEpisode) -> str:
+    """Legacy RAW stores canonical commands; v4 records SDK user radians."""
+
+    domain = (
+        str(raw.scalar("robot_qcmd_hand_domain"))
+        if "robot_qcmd_hand_domain" in raw.keys
+        else "canonical_rad"
+    )
+    if domain not in ("canonical_rad", "sdk_user_rad"):
+        raise ValueError(f"unknown robot_qcmd_hand_domain: {domain!r}")
+    if int(raw.metadata.get("schema_version", 0)) >= 4 and domain != "sdk_user_rad":
+        raise ValueError("RAW v4 requires robot_qcmd_hand_domain=sdk_user_rad")
+    return domain
+
+
 def synchronize_episode(raw: RawEpisode) -> CausalSyncResult:
     """Build strict PRE -> ACTION -> POST transitions from one RAW episode.
 
@@ -104,6 +119,10 @@ def synchronize_episode(raw: RawEpisode) -> CausalSyncResult:
 
     fields = {key: raw.require(key) for key in REQUIRED_FIELDS}
     n = _validate_raw_shapes(fields)
+    hand_actions = fields["hand_qcmd_effective_canonical_rad"]
+    if action_hand_domain(raw) == "sdk_user_rad":
+        hand_actions = hand_actions.copy()
+        hand_actions[:, [3, 6, 8]] *= -1.0
     intervention = classify_interventions(raw.sidecar_metadata, fields["timestamp_ns"])
     if intervention.error is not None:
         reason = "INTERVENTION_METADATA_INVALID"
@@ -178,7 +197,7 @@ def synchronize_episode(raw: RawEpisode) -> CausalSyncResult:
         arm_action_ts = int(fields["arm_qcmd_source_timestamp_ns"][tick])
         hand_action_ts = int(fields["hand_qcmd_source_timestamp_ns"][tick])
         arm_action = np.asarray(fields["arm_qcmd_sent_rad"][tick])
-        hand_action = np.asarray(fields["hand_qcmd_effective_canonical_rad"][tick])
+        hand_action = np.asarray(hand_actions[tick])
         recorded_action = np.asarray(fields["robot_qcmd_17d_rad"][tick])
 
         if not bool(fields["arm_command_valid"][tick]):

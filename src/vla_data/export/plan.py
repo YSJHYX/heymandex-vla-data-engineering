@@ -42,6 +42,13 @@ def _task_instruction(episode: CuratedEpisode) -> str:
     return value
 
 
+def _action_hand_domain(episode: CuratedEpisode) -> str:
+    domain = episode.metadata.get("action_hand_domain", "canonical_rad")
+    if domain not in ("canonical_rad", "sdk_user_rad"):
+        raise ValueError(f"unknown action_hand_domain: {domain!r}")
+    return domain
+
+
 def _is_synthetic(episode: CuratedEpisode) -> bool:
     """Use captured RAW source-kind evidence, not diagnostic Curated statuses."""
 
@@ -297,6 +304,7 @@ def make_mainline_plan(
                     "expert_training_status": source["expert_training_status"],
                     "training_use_status": source["training_use_status"],
                     "curated_path": str(loaded.episode_dir),
+                    "action_hand_domain": _action_hand_domain(loaded),
                     "images": images,
                     "camera_transforms": camera_export_transform_contract(),
                     "max_abs_state_cast_error": state_error,
@@ -487,6 +495,7 @@ def make_plan(manifest_root: str | Path, dataset_name: str = "vla-local") -> dic
                     "split": split,
                     "final_instruction": row["final_instruction"],
                     "curated_path": str(episode.episode_dir),
+                    "action_hand_domain": _action_hand_domain(episode),
                     "images": images,
                     "camera_transforms": camera_export_transform_contract(),
                     "max_abs_state_cast_error": state_error,

@@ -17,6 +17,7 @@ from PIL import Image
 from vla_data.cleaning.causal_sync import (
     CausalSyncResult,
     CausalTransition,
+    action_hand_domain,
     synchronize_episode,
 )
 from vla_data.cleaning.intervention import intervention_fingerprint
@@ -180,6 +181,7 @@ def _metadata(
         "dataset_status": CURATED_DATASET_STATUS_READY,
         "action_representation": ACTION_REPRESENTATION,
         "action_unit": ACTION_UNIT,
+        "action_hand_domain": action_hand_domain(raw),
         "state_representation": STATE_REPRESENTATION,
         "state_unit": STATE_UNIT,
         "segment_offsets": _segment_offsets(transitions),
@@ -250,6 +252,7 @@ def _cleaning_report(
             "state_arm": "arm_qpos_rad measured feedback",
             "state_hand": "hand_feedback_sdk_rad measured mode7 feedback",
             "action": "robot_qcmd_17d_rad exact effective command",
+            "action_hand_domain": action_hand_domain(raw),
             "excluded_state": "hand_qpos_canonical_rad",
             "excluded_action": "desired/retargeted commands",
         },
