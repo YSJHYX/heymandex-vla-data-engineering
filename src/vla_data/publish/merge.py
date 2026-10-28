@@ -277,7 +277,7 @@ def rebuild_logical_dataset(
         capture_output=True,
         text=True,
         check=False,
-        timeout=3600,
+        timeout=10800,
         env=env,
     )
     if completed.returncode or not completed.stdout.strip():
