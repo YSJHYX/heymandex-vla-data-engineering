@@ -157,6 +157,23 @@ def test_official_logical_rebuild_preserves_chunk_zero_episodes(
     assert evidence["episode_lengths"] == [1, 1, 3, 3, 1, 1]
     assert evidence["frames"] == 10
     assert validate_dataset_root(rebuilt)["episodes"] == 6
+    # Incremental assembly: unchanged baseline episodes are byte-carried, so
+    # their MP4s (and therefore their LFS hashes) survive the merge untouched
+    # and the upload/audit cost stays proportional to the appended batch.
+    assert evidence["byte_carried_episodes"] == 4
+    for camera in ("observation.images.head", "observation.images.wrist"):
+        for episode_index in range(4):
+            carried = (
+                baseline
+                / "videos"
+                / f"chunk-000/{camera}/episode_{episode_index:06d}.mp4"
+            ).read_bytes()
+            merged = (
+                rebuilt
+                / "videos"
+                / f"chunk-000/{camera}/episode_{episode_index:06d}.mp4"
+            ).read_bytes()
+            assert carried == merged
     reload = _official_reload(
         local_root=str(rebuilt),
         remote_root=str(rebuilt),

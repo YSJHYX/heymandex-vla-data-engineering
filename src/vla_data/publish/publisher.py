@@ -46,6 +46,29 @@ class RemoteValidationError(RuntimeError):
     """The remote snapshot does not match the local canonical dataset."""
 
 
+def _baseline_cache_path(
+    repo_id: str, override: str | Path | None = None
+) -> Path:
+    """Persistent per-repo baseline download cache root.
+
+    ``snapshot_download`` reuses cached blobs across revisions by content SHA,
+    so a stable cache directory turns repeat baseline fetches into incremental
+    downloads instead of full re-downloads of the growing remote dataset.
+    """
+
+    root = (
+        Path(override)
+        if override is not None
+        else Path(
+            os.environ.get(
+                "VLA_HF_BASELINE_CACHE_ROOT",
+                str(Path.home() / ".cache" / "vla_hf_baseline_cache"),
+            )
+        )
+    )
+    return root / repo_id.replace("/", "__")
+
+
 def publish_dataset(
     dataset_root: str | Path,
     repo_id: str,
@@ -55,6 +78,9 @@ def publish_dataset(
     dry_run: bool = False,
     force: bool = False,
     verification_cache_dir: str | Path | None = None,
+    baseline_cache_dir: str | Path | None = None,
+    verification_mode: str = "auto",
+    full_audit_every_n: int = 5,
     legacy_camera_baseline_revisions: Collection[str] | None = None,
 ) -> dict:
     """Publish a complete, locally rebuilt cumulative LeRobot revision."""
@@ -97,9 +123,16 @@ def publish_dataset(
 
     with tempfile.TemporaryDirectory(prefix="vla_hf_cumulative_") as temporary:
         work = Path(temporary)
+        persistent_baseline_cache = _baseline_cache_path(repo_id, baseline_cache_dir)
+        persistent_baseline_cache.mkdir(parents=True, exist_ok=True)
         try:
             baseline, baseline_manifest = _download_valid_baseline(
-                state, repo_id, hf_python, lerobot_python, work
+                state,
+                repo_id,
+                hf_python,
+                lerobot_python,
+                work,
+                baseline_cache_dir=persistent_baseline_cache,
             )
             plan = plan_logical_merge(
                 dataset_root,
@@ -198,14 +231,30 @@ def publish_dataset(
             },
             hf_python,
         )
-        remote_check = validate_remote(
-            rebuilt,
+        mode = _resolve_verification_mode(
             repo_id,
-            revision=commit["commit_sha"],
-            hf_python=hf_python,
-            lerobot_python=lerobot_python,
-            cache_dir=verification_cache_dir or work / "verification_cache",
+            persistent_baseline_cache,
+            verification_mode,
+            full_audit_every_n,
         )
+        if mode == "full":
+            remote_check = validate_remote(
+                rebuilt,
+                repo_id,
+                revision=commit["commit_sha"],
+                hf_python=hf_python,
+                lerobot_python=lerobot_python,
+                cache_dir=verification_cache_dir or work / "verification_cache",
+            )
+            _advance_verification_counter(persistent_baseline_cache)
+        else:
+            remote_check = validate_remote_listing(
+                rebuilt,
+                repo_id,
+                revision=commit["commit_sha"],
+                hf_python=hf_python,
+            )
+            _advance_verification_counter(persistent_baseline_cache)
         return {
             **evidence,
             "action": STATUS_UPLOADED,
@@ -309,6 +358,154 @@ def manifest_tasks(dataset_root: str | Path) -> list[str]:
     return validate_dataset_root(dataset_root)["tasks"]
 
 
+_VERIFICATION_COUNTER = ".verification_counter.json"
+
+
+def _resolve_verification_mode(
+    repo_id: str,
+    baseline_cache: Path,
+    verification_mode: str,
+    full_audit_every_n: int,
+) -> str:
+    """Decide between a full fresh-download audit and a listing audit.
+
+    "auto" runs a full fresh-download audit on the very first publish (to
+    establish trust in the listing path against a real download) and then once
+    every ``full_audit_every_n`` successful publishes; every other publish is
+    verified through the zero-download LFS sha256 listing comparison.
+    """
+
+    if verification_mode not in {"auto", "full", "listing"}:
+        raise ValueError(
+            f"verification_mode must be auto/full/listing, got {verification_mode!r}"
+        )
+    if verification_mode in {"full", "listing"}:
+        return verification_mode
+    if full_audit_every_n < 1:
+        raise ValueError("full_audit_every_n must be >= 1")
+    counter_path = baseline_cache / _VERIFICATION_COUNTER
+    try:
+        count = int(json.loads(counter_path.read_text())["successful_publishes"])
+    except (OSError, ValueError, KeyError, TypeError):
+        count = 0
+    # count == 0: first ever publish under the new scheme -> full audit.
+    # Otherwise audit fully every N-th publish (count 5, 10, ... with N=5).
+    return (
+        "full"
+        if count == 0 or count % full_audit_every_n == 0
+        else "listing"
+    )
+
+
+def _advance_verification_counter(baseline_cache: Path) -> None:
+    counter_path = baseline_cache / _VERIFICATION_COUNTER
+    try:
+        count = int(json.loads(counter_path.read_text())["successful_publishes"])
+    except (OSError, ValueError, KeyError, TypeError):
+        count = 0
+    counter_path.parent.mkdir(parents=True, exist_ok=True)
+    counter_path.write_text(
+        json.dumps({"successful_publishes": count + 1}, sort_keys=True)
+    )
+
+
+def validate_remote_listing(
+    dataset_root: str | Path,
+    repo_id: str,
+    revision: str,
+    *,
+    hf_python: str | None,
+) -> dict:
+    """Zero-download remote audit via server-side content hashes.
+
+    Byte-equality argument: every canonical LFS file is compared through the
+    server-side sha256 that Hugging Face computes on upload, and every small
+    non-LFS canonical file (meta/*.jsonl) is individually downloaded and
+    hashed. Remote bytes are therefore proven identical to the local rebuilt
+    tree, which has already passed validate_dataset_root, the canonical
+    manifest build, and an official LeRobot reload. A periodic full
+    fresh-download audit additionally re-proves the download channel itself.
+    """
+
+    started = time.monotonic()
+    validate_repo_id(repo_id)
+    if not isinstance(revision, str) or not FULL_SHA_PATTERN.fullmatch(revision):
+        raise RemoteValidationError(
+            "remote verification requires an exact 40-character commit SHA"
+        )
+    manifest = build_canonical_manifest(dataset_root)
+    state = hf_call(
+        "repo_state", {"repo_id": repo_id, "revision": revision}, hf_python
+    )
+    if state.get("sha") != revision:
+        raise RemoteValidationError(
+            "remote listing revision does not match the pinned commit SHA"
+        )
+    remote = {file["path"]: file for file in state["files"]}
+    local_paths = {entry["relative_path"] for entry in manifest["files"]}
+    mismatches = []
+    small_files = []
+    for entry in manifest["files"]:
+        item = remote.get(entry["relative_path"])
+        if item is None:
+            mismatches.append(
+                {"relative_path": entry["relative_path"], "error": "missing"}
+            )
+            continue
+        if item.get("lfs_sha256"):
+            if (
+                item["lfs_sha256"] != entry["sha256"]
+                or item.get("size") != entry["size_bytes"]
+            ):
+                mismatches.append(
+                    {"relative_path": entry["relative_path"], "error": "hash_mismatch"}
+                )
+        else:
+            small_files.append(
+                {
+                    "path": entry["relative_path"],
+                    "sha256": entry["sha256"],
+                    "size": entry["size_bytes"],
+                }
+            )
+    if mismatches:
+        raise RemoteValidationError(
+            f"canonical file mismatches: {json.dumps(mismatches[:5])}"
+        )
+    extra = set(remote) - local_paths - NON_CANONICAL_REMOTE_FILES
+    if extra:
+        raise RemoteValidationError(
+            f"remote revision holds non-canonical files: {sorted(extra)[:5]}"
+        )
+    small_checked = {"checked": 0, "mismatches": []}
+    if small_files:
+        small_checked = hf_call(
+            "verify_files",
+            {"repo_id": repo_id, "revision": revision, "files": small_files},
+            hf_python,
+        )
+        if small_checked.get("mismatches"):
+            raise RemoteValidationError(
+                "small-file mismatches: "
+                f"{json.dumps(small_checked['mismatches'][:5])}"
+            )
+    return {
+        "schema_name": "vla_hf_remote_validation",
+        "schema_version": 2,
+        "mode": "listing",
+        "repo_id": repo_id,
+        "revision": revision,
+        "resolved_sha": state.get("sha"),
+        "private": state.get("private"),
+        "lfs_files_verified": len(manifest["files"]) - len(small_files),
+        "small_files_verified": small_checked.get("checked", 0),
+        "canonical_file_mismatches": 0,
+        "canonical_file_count": manifest["file_count"],
+        "local_fingerprint": manifest["fingerprint"],
+        "wall_time_s": time.monotonic() - started,
+    }
+
+
 def _source_export_fingerprint(dataset_root: str | Path) -> str | None:
     path = Path(dataset_root).parent / "export_summary.json"
     if not path.is_file():
@@ -360,6 +557,8 @@ def _download_valid_baseline(
     hf_python: str | None,
     lerobot_python: str,
     work: Path,
+    *,
+    baseline_cache_dir: Path | None = None,
 ) -> tuple[Path | None, dict | None]:
     """Pin and validate the complete old dataset before any merge or upload."""
 
@@ -381,7 +580,7 @@ def _download_valid_baseline(
         {
             "repo_id": repo_id,
             "revision": state["sha"],
-            "cache_dir": str(work / "baseline_cache"),
+            "cache_dir": str(baseline_cache_dir or work / "baseline_cache"),
         },
         hf_python,
     )
