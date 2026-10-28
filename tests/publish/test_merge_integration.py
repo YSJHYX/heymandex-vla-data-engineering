@@ -156,6 +156,19 @@ def test_official_logical_rebuild_preserves_chunk_zero_episodes(
     assert evidence["official_reload"] == "PASS"
     assert evidence["episode_lengths"] == [1, 1, 3, 3, 1, 1]
     assert evidence["frames"] == 10
+    stats_rows = [
+        json.loads(line)
+        for line in (rebuilt / "meta/episodes_stats.jsonl").read_text().splitlines()
+    ]
+    offset = 0
+    for index, (row, length) in enumerate(
+        zip(stats_rows, evidence["episode_lengths"], strict=True)
+    ):
+        assert row["stats"]["episode_index"]["min"] == [index]
+        assert row["stats"]["episode_index"]["max"] == [index]
+        assert row["stats"]["index"]["min"] == [offset]
+        assert row["stats"]["index"]["max"] == [offset + length - 1]
+        offset += length
     assert validate_dataset_root(rebuilt)["episodes"] == 6
     # Incremental assembly: unchanged baseline episodes are byte-carried, so
     # their MP4s (and therefore their LFS hashes) survive the merge untouched

@@ -16,6 +16,7 @@ import numpy as np
 from PIL import Image
 
 try:
+    from .bookkeeping_stats import BOOKKEEPING, validate_bookkeeping_stats
     from .camera_transform import (
         CAMERA_EXPORT_TRANSFORMS,
         CAMERA_FEATURE_TO_EXPORT_ROLE,
@@ -23,6 +24,7 @@ try:
     )
     from .writer_options import IMAGE_WRITER_THREADS
 except ImportError:  # Standalone execution in the audited LeRobot environment.
+    from bookkeeping_stats import BOOKKEEPING, validate_bookkeeping_stats
     from camera_transform import (  # type: ignore[no-redef]
         CAMERA_EXPORT_TRANSFORMS,
         CAMERA_FEATURE_TO_EXPORT_ROLE,
@@ -311,6 +313,13 @@ def validate(request):
                 "metadata episode length mismatch",
             )
             table = dataset.hf_dataset.select(range(start, stop))
+            validate_bookkeeping_stats(
+                {
+                    "episode_index": episode_index,
+                    "stats": dataset.meta.episodes_stats[episode_index],
+                },
+                {key: [int(value) for value in table[key]] for key in BOOKKEEPING},
+            )
             require(
                 [int(i) for i in table["frame_index"]] == list(range(count)),
                 "frame_index order mismatch",
