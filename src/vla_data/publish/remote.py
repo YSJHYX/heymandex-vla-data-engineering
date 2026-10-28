@@ -30,7 +30,7 @@ def hf_call(mode: str, payload: dict, hf_python: str | None = None) -> dict:
         capture_output=True,
         text=True,
         check=False,
-        timeout=1800,
+        timeout=7200,
     )
     if completed.returncode != 0 or not completed.stdout.strip():
         raise HFWorkerError(
