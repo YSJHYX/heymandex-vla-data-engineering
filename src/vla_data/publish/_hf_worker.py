@@ -31,7 +31,7 @@ def dispatch(mode: str, request: dict) -> dict:
     if mode == "whoami":
         return whoami()
     if mode == "repo_state":
-        return repo_state(request["repo_id"])
+        return repo_state(request["repo_id"], request.get("revision"))
     if mode == "upload":
         return upload(
             request["repo_id"],
@@ -41,6 +41,10 @@ def dispatch(mode: str, request: dict) -> dict:
         )
     if mode == "download":
         return download(request["repo_id"], request["revision"], request["cache_dir"])
+    if mode == "verify_files":
+        return verify_files(
+            request["repo_id"], request["revision"], request["files"]
+        )
     raise ValueError(f"unknown hf worker mode {mode!r}")
 
 
@@ -56,14 +60,20 @@ def whoami() -> dict:
     }
 
 
-def repo_state(repo_id: str) -> dict:
+def repo_state(repo_id: str, revision: str | None = None) -> dict:
     from huggingface_hub import HfApi
 
     api = HfApi()
-    info = api.repo_info(repo_id=repo_id, repo_type="dataset", files_metadata=True)
+    info = api.repo_info(
+        repo_id=repo_id, repo_type="dataset", files_metadata=True, revision=revision
+    )
     files = []
     for item in api.list_repo_tree(
-        repo_id=repo_id, repo_type="dataset", recursive=True, expand=True
+        repo_id=repo_id,
+        repo_type="dataset",
+        revision=info.sha,
+        recursive=True,
+        expand=True,
     ):
         if type(item).__name__ == "RepoFolder":  # directory entries have no blob
             continue
@@ -137,6 +147,50 @@ def download(repo_id: str, revision: str, cache_dir: str) -> dict:
         cache_dir=cache_dir,
     )
     return {"snapshot_path": path, "resolved_sha": info.sha, "private": True}
+
+
+def verify_files(repo_id: str, revision: str, files: list) -> dict:
+    """Byte-verify small non-LFS remote files against expected SHA-256 digests.
+
+    Listing-based remote verification covers LFS files through the server-side
+    content SHA; plain git-blob files (meta/*.jsonl, README) carry no sha256 in
+    the tree listing, so they are downloaded individually and hashed. Only
+    small canonical files are ever passed here.
+    """
+
+    import hashlib
+    import tempfile
+    from pathlib import Path
+
+    from huggingface_hub import HfApi, hf_hub_download
+
+    api = HfApi()
+    info = api.repo_info(repo_id=repo_id, repo_type="dataset", revision=revision)
+    if info.sha != revision or info.private is not True:
+        raise ValueError("pinned revision or private visibility could not be verified")
+
+    mismatches = []
+    with tempfile.TemporaryDirectory(prefix="vla_hf_verify_files_") as temporary:
+        root = Path(temporary)
+        for item in files:
+            path = item["path"]
+            try:
+                local = hf_hub_download(
+                    repo_id=repo_id,
+                    repo_type="dataset",
+                    revision=revision,
+                    filename=path,
+                    local_dir=str(root),
+                )
+                data = Path(local).read_bytes()
+                digest = hashlib.sha256(data).hexdigest()
+                if digest != item["sha256"] or len(data) != item.get("size", -1):
+                    mismatches.append({"path": path, "error": "hash_mismatch"})
+            except Exception as exc:  # noqa: BLE001 - report per-file, keep going
+                mismatches.append(
+                    {"path": path, "error": f"download_failed: {type(exc).__name__}"}
+                )
+    return {"mismatches": mismatches, "checked": len(files)}
 
 
 if __name__ == "__main__":

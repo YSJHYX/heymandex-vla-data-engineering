@@ -54,12 +54,19 @@ class FakeHub:
         self.uploaded_files: list[str] = []
         self.upload_payloads: list[dict] = []
         self.download_revisions: list[str] = []
+        self.uploaded_listing: list[dict] | None = None
 
     def __call__(self, mode: str, payload: dict, hf_python=None) -> dict:
         self.calls.append(mode)
         if mode == "whoami":
             return {"account": "PPPPPilot", "token_role": "write"}
         if mode == "repo_state":
+            if payload.get("revision"):
+                return {
+                    **self.state,
+                    "sha": payload["revision"],
+                    "files": self.uploaded_listing or self.state["files"],
+                }
             return self.state
         if mode == "upload":
             self.upload_payloads.append(payload)
@@ -69,12 +76,25 @@ class FakeHub:
                 for path in staging.rglob("*")
                 if path.is_file()
             )
+            self.uploaded_listing = [
+                {
+                    "path": path.relative_to(staging).as_posix(),
+                    "size": path.stat().st_size,
+                    "lfs_sha256": _file_sha256(path),
+                }
+                for path in sorted(
+                    staging.rglob("*"), key=lambda p: p.relative_to(staging).as_posix()
+                )
+                if path.is_file()
+            ]
             self.uploads.append(payload["staging_dir"])
             return {
                 "commit_sha": "deadbeef" * 5,
                 "commit_url": f"https://huggingface.co/datasets/{REPO}/tree/abc",
                 "codebase_tag": "v2.1",
             }
+        if mode == "verify_files":
+            return {"mismatches": [], "checked": len(payload["files"])}
         if mode == "download":
             self.download_revisions.append(payload["revision"])
             return {
@@ -614,8 +634,83 @@ def test_publish_module_never_imports_openpi_or_lerobot() -> None:
             "tempfile",
             "time",
             "shutil",
-                "socket",
+            "socket",
+            "urllib",
             "huggingface_hub",
-                "urllib",
             "vla_data",
         }, (source.name, modules)
+
+
+# ------------------------------------------------- listing-based verification
+
+
+def _file_sha256(path: Path) -> str:
+    import hashlib
+
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_validate_remote_listing_pass(hf_dataset_root, monkeypatch) -> None:
+    from vla_data.publish.publisher import validate_remote_listing
+
+    hub = FakeHub(_state(_matching_remote(hf_dataset_root)))
+    monkeypatch.setattr(publisher_module, "hf_call", hub)
+    result = validate_remote_listing(
+        hf_dataset_root, REPO, REVISION, hf_python="python"
+    )
+    assert result["mode"] == "listing"
+    assert result["canonical_file_mismatches"] == 0
+    assert result["canonical_file_count"] == 7
+    assert "verify_files" not in hub.calls  # all canonical files are LFS-listed
+
+
+def test_validate_remote_listing_detects_corruption(hf_dataset_root, monkeypatch) -> None:
+    from vla_data.publish.publisher import validate_remote_listing
+
+    listing = _matching_remote(hf_dataset_root)
+    listing[0]["lfs_sha256"] = "0" * 64  # remote hash differs from local
+    hub = FakeHub(_state(listing))
+    monkeypatch.setattr(publisher_module, "hf_call", hub)
+    with pytest.raises(RemoteValidationError, match="hash_mismatch"):
+        validate_remote_listing(hf_dataset_root, REPO, REVISION, hf_python="python")
+
+
+def test_validate_remote_listing_detects_missing_file(hf_dataset_root, monkeypatch) -> None:
+    from vla_data.publish.publisher import validate_remote_listing
+
+    hub = FakeHub(_state(_matching_remote(hf_dataset_root)[1:]))
+    monkeypatch.setattr(publisher_module, "hf_call", hub)
+    with pytest.raises(RemoteValidationError, match="missing"):
+        validate_remote_listing(hf_dataset_root, REPO, REVISION, hf_python="python")
+
+
+def test_publish_auto_mode_promotes_to_listing_after_first_full_audit(
+    hf_dataset_root, monkeypatch, tmp_path
+) -> None:
+    import json as _json
+
+    hub = FakeHub(_state([], snapshot=tmp_path))
+    monkeypatch.setattr(publisher_module, "hf_call", hub)
+    _mock_upload_merge(monkeypatch)
+    first = publish_dataset(
+        hf_dataset_root, REPO, baseline_cache_dir=tmp_path / "cache"
+    )
+    assert first["action"] == "UPLOADED"
+    counter = _json.loads(
+        (tmp_path / "cache" / REPO.replace("/", "__") / ".verification_counter.json")
+        .read_text()
+    )
+    assert counter["successful_publishes"] == 1
+    # The second publish no longer runs the mocked full download audit; it
+    # switches to the zero-download listing verification against the uploaded
+    # tree recorded by FakeHub.
+    second = publish_dataset(
+        hf_dataset_root, REPO, baseline_cache_dir=tmp_path / "cache"
+    )
+    assert second["action"] == "UPLOADED"
+    assert second["remote_validation"]["mode"] == "listing"
+    counter = _json.loads(
+        (tmp_path / "cache" / REPO.replace("/", "__") / ".verification_counter.json")
+        .read_text()
+    )
+    assert counter["successful_publishes"] == 2

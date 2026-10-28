@@ -90,3 +90,17 @@ def manifest_entries(root: Path) -> list[dict]:
         for p in paths
         if p.is_file()
     ]
+
+
+@pytest.fixture(autouse=True)
+def isolated_baseline_cache(tmp_path, monkeypatch):
+    """Keep the persistent per-repo baseline/verification caches in tmp.
+
+    Publication now persists its HF baseline download cache and verification
+    counter across runs; tests must never read or write the real
+    ~/.cache/vla_hf_baseline_cache of the developer machine.
+    """
+
+    monkeypatch.setenv(
+        "VLA_HF_BASELINE_CACHE_ROOT", str(tmp_path / "baseline_cache")
+    )
