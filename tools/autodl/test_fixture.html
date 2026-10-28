@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>AutoDL 监控本机演练</title>
+<style>
+body{font:16px/1.7 system-ui;padding:24px;background:#f0f4f8;color:#152536}
+table{border-collapse:collapse;width:75%;background:white}td,th{padding:10px;border:1px solid #b8c9da}
+.el-checkbox{display:inline-block;margin:12px}.el-form-item{background:white;padding:12px;width:68%}
+.el-dialog__wrapper{position:fixed;top:40%;left:25%;background:white;padding:30px;border:2px solid #345;z-index:1000}
+button{padding:8px;margin:6px}#result{white-space:pre-wrap;margin-bottom:120px}
+</style>
+<script>
+// 纯本机模拟：不会访问 AutoDL，不会创建实例或发送邮件。
+const mode = new URL(location.href).searchParams.get('mode') || 'notify';
+if (new URL(location.href).searchParams.has('reset')) {
+  for (const key of Object.keys(localStorage)) if (key.startsWith('autodl.gpu-watch.')) localStorage.removeItem(key);
+  sessionStorage.removeItem('autodl.fixture.counts');
+}
+localStorage.setItem('autodl.gpu-watch.settings.v1', JSON.stringify({
+  autoSubmit: mode === 'submit', targetModels: ['RTX 5090'], minIdle: 1,
+  maxPrice: 3, notifyOn: false, mailNotify: false, pollMs: 4000
+}));
+const savedCounts = JSON.parse(sessionStorage.getItem('autodl.fixture.counts') || '{}');
+let stockIdle = 0, listCalls = 0, stockCalls = 0,
+  createCalls = savedCounts.create || 0, confirmCalls = savedCounts.confirm || 0;
+function counters() {
+  const result = document.getElementById('result');
+  if (result) result.textContent = `模式：${mode}\n列表请求：${listCalls}\n余量请求：${stockCalls}\n创建点击：${createCalls}\n确认点击：${confirmCalls}\n提交锁：${localStorage.getItem('autodl.gpu-watch.submit-lock.v1') ? '有' : '无'}`;
+  sessionStorage.setItem('autodl.fixture.counts', JSON.stringify({create:createCalls, confirm:confirmCalls}));
+}
+window.fetch = async function(input, init) {
+  const path = new URL(typeof input === 'string' ? input : input.url, location.href).pathname;
+  if (path.endsWith('/user/machine/list')) {
+    listCalls++; counters();
+    return new Response(JSON.stringify({data: [{gpu_idle_num: 0}, {gpu_idle_num: 0}]}), {status: 200});
+  }
+  if (path.endsWith('/machine/region/gpu_type')) {
+    stockCalls++; counters();
+    return new Response(JSON.stringify({data: {'RTX 5090': {idle: stockIdle, total: 2544}, 'RTX 5090 D': {idle: 5, total: 8}}}), {status: 200});
+  }
+  throw new Error('演练禁止其它网络请求');
+};
+function pageList() {
+  return fetch('/api/v1/user/machine/list', {method:'POST', headers:{Authorization:'test-token-not-a-secret', 'Content-Type':'application/json'},
+    body:JSON.stringify({region_sign_list:['fixture-region'], gpu_type_name:'RTX 5090', gpu_idle_num:1})});
+}
+</script>
+<script src="autodl-gpu-watch.user.js"></script>
+</head><body>
+<div class="el-breadcrumb">实例 / 克隆实例</div>
+<h1>本机模拟页面</h1><p>数据、认证值、主机均为测试内容；按钮只增加本机计数。</p>
+<div class="el-form-item"><span>GPU 型号</span>
+  <label class="el-checkbox"><input type="checkbox"><span class="el-checkbox__label">全部</span></label>
+  <label class="el-checkbox"><input type="checkbox" checked><span class="el-checkbox__label">RTX 5090 (0/2544)</span></label>
+  <label class="el-checkbox"><input type="checkbox"><span class="el-checkbox__label">RTX 5090 D (5/8)</span></label>
+</div>
+<h2>选择主机</h2><div class="el-table">
+  <div class="el-table__header-wrapper"><table><thead><tr><th>选择</th><th>主机ID</th><th>机房</th><th>型号</th><th>空闲</th><th>配置</th><th>价格</th></tr></thead></table></div>
+  <div class="el-table__body-wrapper"><table><tbody>
+    <tr><td><input id="radio" type="radio" name="host" disabled></td><td>99984bf43</td><td>756机</td><td>RTX 5090 32GB</td><td id="idle">0 / 8</td><td>CPU: 25核</td><td>¥2.88/时<br>¥3.03/时</td></tr>
+    <tr><td><input type="radio" name="host"></td><td>D款主机</td><td>756机</td><td>RTX 5090 D 32GB</td><td>5 / 8</td><td>CPU: 25核</td><td>¥2.88/时</td></tr>
+  </tbody></table></div>
+  <div class="el-table__fixed"><table><tbody><tr><td><input type="radio"></td><td>副本行</td><td>RTX 5090</td><td>8 / 8</td><td>¥1/时</td></tr></tbody></table></div>
+</div>
+<button id="make-free">手工模拟 1 / 8</button><button id="refresh-page">模拟页面发出列表请求</button>
+<button id="create">创建并开机</button>
+<div class="el-message-box__wrapper" style="display:none" id="dialog"><p>确认创建克隆实例并开机？</p><button id="confirm">确定</button></div>
+<pre id="result"></pre>
+<script>
+for (const input of document.querySelectorAll('.el-checkbox input')) input.onchange = pageList;
+document.getElementById('make-free').onclick = () => {
+  stockIdle = 1; document.getElementById('idle').textContent = '1 / 8';
+  document.querySelectorAll('.el-checkbox__label')[1].textContent = 'RTX 5090 (1/2544)';
+};
+document.getElementById('refresh-page').onclick = pageList;
+document.getElementById('create').onclick = () => {createCalls++; document.getElementById('dialog').style.display = 'block'; counters();};
+document.getElementById('confirm').onclick = () => {confirmCalls++; document.getElementById('dialog').style.display = 'none'; counters();};
+pageList(); counters(); setInterval(counters, 1000);
+</script></body></html>
