@@ -17,6 +17,11 @@ from lerobot.common.datasets.lerobot_dataset import CODEBASE_VERSION, LeRobotDat
 
 EXPORT_MODULE_DIR = Path(__file__).resolve().parents[1] / "export"
 sys.path.insert(0, str(EXPORT_MODULE_DIR))
+from bookkeeping_stats import (
+    BOOKKEEPING,
+    refresh_bookkeeping_stats,
+    validate_bookkeeping_stats,
+)
 from camera_transform import (
     CAMERA_EXPORT_TRANSFORMS,
     apply_camera_export_transform,
@@ -232,9 +237,7 @@ def _merge_meta_files(
 
     def read_lines(path: Path) -> list[dict]:
         return [
-            _json.loads(line)
-            for line in path.read_text().splitlines()
-            if line.strip()
+            _json.loads(line) for line in path.read_text().splitlines() if line.strip()
         ]
 
     # tasks.jsonl: baseline rows first, then previously unseen tasks appended.
@@ -247,12 +250,25 @@ def _merge_meta_files(
         "".join(_json.dumps(row, sort_keys=True) + "\n" for row in task_rows)
     )
 
-    # episodes.jsonl / episodes_stats.jsonl: baseline rows unchanged, appended
-    # rows carry only a rebased episode_index.
+    # Rebuild bookkeeping stats from the final Parquet, including any stale
+    # baseline stats from older merges. Physical and image statistics stay intact.
     for name in ("episodes.jsonl", "episodes_stats.jsonl"):
         rows_out = read_lines(baseline_root / "meta" / name)
         for row in read_lines(partial_root / "meta" / name)[migration_count:]:
             rows_out.append({**row, "episode_index": len(rows_out)})
+        if name == "episodes_stats.jsonl":
+            import pyarrow.parquet as pq
+
+            rows_out = [
+                refresh_bookkeeping_stats(
+                    row,
+                    pq.read_table(
+                        root / _data_relpath(row["episode_index"], chunks_size),
+                        columns=list(BOOKKEEPING),
+                    ).to_pydict(),
+                )
+                for row in rows_out
+            ]
         (root / "meta" / name).write_text(
             "".join(_json.dumps(row, sort_keys=True) + "\n" for row in rows_out)
         )
@@ -477,6 +493,18 @@ def build(request: dict) -> dict:
         c = int(merged.episode_data_index["from"][merged_index])
         d = int(merged.episode_data_index["to"][merged_index])
         require(b - a == d - c, "merged frame range")
+        validate_bookkeeping_stats(
+            {
+                "episode_index": merged_index,
+                "stats": merged.meta.episodes_stats[merged_index],
+            },
+            {
+                key: [
+                    int(value) for value in merged.hf_dataset.select(range(c, d))[key]
+                ]
+                for key in BOOKKEEPING
+            },
+        )
         for key in VECTORS:
             old = torch.stack(source.hf_dataset.select(range(a, b))[key]).numpy()
             new = torch.stack(merged.hf_dataset.select(range(c, d))[key]).numpy()
