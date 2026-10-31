@@ -58,7 +58,9 @@ def test_frontend_safety_state_wiring() -> None:
     for contract in (
         'const validated = () => latestAny("validate")?.status === "PASS"',
         'result?.would_action==="NO_NEW_EPISODES"',
-        "state.hf?.private!==true",
+        'typeof state.hf?.private === "boolean"',
+        'state.hf?.repo_id === $("hf-repo").value',
+        "!hfReady()",
         'dry?.status!=="PASS"',
         'dry.context?.repo_id!==$("hf-repo").value',
         'confirmation:"我已检查 Dry Run 结果"',

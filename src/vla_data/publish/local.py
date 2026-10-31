@@ -226,7 +226,7 @@ def build_readme(tasks: list[str], fps: object) -> str:
         "---\n"
         f"tags:\n- lerobot\n- robotics\nfps: {fps}\n---\n\n"
         "# HeymanDex RM65B + SG100 VLA Dataset\n\n"
-        "Status: PRIVATE_TRAINING_DATASET\n\n"
+        "Status: TRAINING_DATASET\n\n"
         "Cumulative dataset: each clean rollout is one separate episode, even when "
         "tasks repeat. Physical storage: measured 17D state, effective 17D action, "
         "head RGB, wrist RGB, and exact collection-time task instructions.\n\n"

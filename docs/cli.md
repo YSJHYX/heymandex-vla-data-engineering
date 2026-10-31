@@ -5,7 +5,7 @@ MAINLINE 与 OPTIONAL 不可混为一条 eligibility chain。
 本机约定 `UV_CACHE_DIR=/data/uv-cache`；按 README 设置后使用
 `uv run --no-sync`，不会执行依赖同步。
 
-## Production CLI — stops at private HF verification
+## Production CLI — stops at HF verification
 
 | Command | Role |
 | --- | --- |
@@ -15,7 +15,7 @@ MAINLINE 与 OPTIONAL 不可混为一条 eligibility chain。
 | `vla-data export-lerobot` | Direct D2+D3 contiguous runs → LeRobot v2.1 |
 | `vla-data validate-lerobot` | Reconstruct source plan and official reload |
 | `vla-data publish-hf --dry-run` | Local official reload and production publication preflight |
-| `vla-data publish-hf` | Publish one validated split to an existing private HF repo and verify it |
+| `vla-data publish-hf` | Publish one validated split to an existing private or public HF repo and verify it |
 | `vla-data publish-hf --revision SHA` | Read-only fresh download/reload of a pinned revision |
 
 ### Curation and quality
@@ -98,9 +98,11 @@ uv run --no-sync vla-data validate-lerobot \
   --lerobot-python /data/projects/vla_ws/openpi/.venv/bin/python
 ```
 
-### Private HF publication
+### HF publication (private or public)
 
-The dataset repo must already exist and be private. Authentication stays outside this
+The dataset repo must already exist; private and public repositories are supported.
+The publishing account needs read/write access. Visibility is recorded, never changed
+by the publisher. Authentication stays outside this
 repository (`hf auth login`, `hf auth whoami`); no token is persisted.
 
 ```bash
@@ -113,7 +115,7 @@ uv run --no-sync vla-data publish-hf \
 ```
 
 `publish-hf` is cumulative: its normal baseline is the **current valid remote HEAD**. It
-fresh-downloads and validates that pinned private revision, without walking backward to
+fresh-downloads and validates that pinned revision, without walking backward to
 older commits or automatically recovering historical/test episodes. The initial valid
 baseline of `PPPPPilot/VLADexData` is
 `2347702eed03bb3b4a54c1f4598c47c98e804e45` (4 episodes, 1055 frames).

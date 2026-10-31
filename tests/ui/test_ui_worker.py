@@ -45,13 +45,14 @@ def test_no_new_dry_run_calls_existing_publisher_read_only(
     assert observed["root"] == Path(worker_request["paths"]["export"]) / "train"
 
 
-def test_publish_rechecks_private_head_before_existing_publisher(
-    worker_request: dict, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("private", [True, False], ids=["private", "public"])
+def test_publish_rechecks_head_before_existing_publisher(
+    worker_request: dict, monkeypatch: pytest.MonkeyPatch, private: bool
 ) -> None:
     worker_request["stage"] = "hf-publish"
     calls = []
     monkeypatch.setattr(
-        worker, "hf_call", lambda *_: {"private": True, "sha": "b" * 40}
+        worker, "hf_call", lambda *_: {"private": private, "sha": "b" * 40}
     )
     monkeypatch.setattr(
         worker, "publish_dataset", lambda *_args, **_kwargs: calls.append(1)
@@ -61,7 +62,7 @@ def test_publish_rechecks_private_head_before_existing_publisher(
     assert calls == []
 
     monkeypatch.setattr(
-        worker, "hf_call", lambda *_: {"private": True, "sha": "a" * 40}
+        worker, "hf_call", lambda *_: {"private": private, "sha": "a" * 40}
     )
     monkeypatch.setattr(
         worker,

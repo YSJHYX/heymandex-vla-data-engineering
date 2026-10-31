@@ -2,7 +2,7 @@
 
 ## 1. 项目用途与边界
 
-本仓库把真实机器人 RAW 数据整理为经过验证、可累计发布的 LeRobot v2.1 数据集。主线到私有 Hugging Face 仓库的固定 revision 回读验证为止。
+本仓库把真实机器人 RAW 数据整理为经过验证、可累计发布的 LeRobot v2.1 数据集。主线到 Hugging Face 仓库（支持 private/public）的固定 revision 回读验证为止。
 
 **本仓库不负责 π0.5 训练、不负责模型推理、不负责真机部署。** OpenPI/π0.5 只是下游消费者；normalization、17→32 padding、training、checkpoint 和 inference 都不属于这里的生产流程。D4/D5 也不是生产主线的前置条件。
 
@@ -27,7 +27,7 @@ LeRobot v2.1 导出
 本地独立验证
  │
  ▼
-私有 Hugging Face 累计发布
+Hugging Face 累计发布（private/public）
  │
  ▼
 固定 Commit SHA 的 Fresh Download / Reload 验证
@@ -75,7 +75,7 @@ lerobot/
     └── meta/
 ```
 
-当前 003–006 实际导出只有 `train/`；`--validation-fraction 0.1` 不保证小批次一定产生 `val/`。分配按 `source_episode_id` 做 source-level split，同一来源的 derived runs 不会跨 train/val。发布时一次只指定一个 split root；如需发布 `val/`，应使用单独的私有 HF repo，不能假定它会自动并入 train repo。
+当前 003–006 实际导出只有 `train/`；`--validation-fraction 0.1` 不保证小批次一定产生 `val/`。分配按 `source_episode_id` 做 source-level split，同一来源的 derived runs 不会跨 train/val。发布时一次只指定一个 split root；如需发布 `val/`，应使用单独的 HF repo（private/public 均可），不能假定它会自动并入 train repo。
 
 ### 为什么不是 HDF5
 
@@ -114,7 +114,7 @@ LEROBOT_PYTHON=/data/projects/vla_ws/openpi/.venv/bin/python
 HF_PYTHON="$LEROBOT_PYTHON"
 ```
 
-`RAW_ROOT` 指向待处理批次的真实 RAW episode 目录。HF dataset repo 必须预先存在且为 private；可用 `hf auth whoami` 检查当前认证，不要把 token 写进配置或产物。以下 `uv run --no-sync` 命令不会同步依赖。
+`RAW_ROOT` 指向待处理批次的真实 RAW episode 目录。HF dataset repo 必须预先存在，支持 private 和 public；当前账号须具有读写权限；可用 `hf auth whoami` 检查当前认证，不要把 token 写进配置或产物。以下 `uv run --no-sync` 命令不会同步依赖。
 
 ## 7. Step 1 — D2 物理/因果清洗
 
@@ -197,7 +197,7 @@ uv run --no-sync vla-data validate-lerobot \
 
 ## 11. Step 5 — HF Dry Run
 
-用途：只读检查现有私有仓库与本次 incoming split，计算累计发布计划；**不会上传**。
+用途：只读检查现有 HF 仓库与本次 incoming split，计算累计发布计划；**不会上传**。
 
 输入：`$EXPORT_ROOT/train`、`$HF_REPO`。输出：`BASELINE`、`INCOMING`、`DUPLICATES`、`TO_APPEND`、`MERGED_TOTAL` 和拟执行动作。
 
@@ -212,9 +212,9 @@ uv run --no-sync vla-data publish-hf \
   --dry-run
 ```
 
-成功标准：本地导出独立验证通过，当前 private HEAD 可作有效 baseline，累计计划与预期相符；同批重跑可得到 `Would NO_NEW_EPISODES`。
+成功标准：本地导出独立验证通过，当前 HF HEAD 可作有效 baseline，累计计划与预期相符；同批重跑可得到 `Would NO_NEW_EPISODES`。
 
-常见阻断条件：HF repo 不存在或为 public、远端含未知文件、现有 HEAD 缺可核验 provenance、或本地导出未通过验证。不要用 `--force` 绕过。
+常见阻断条件：HF repo 不存在或不可访问、远端含未知文件、现有 HEAD 缺可核验 provenance、或本地导出未通过验证。不要用 `--force` 绕过。
 
 ## 12. Step 6 — HF Cumulative Publish
 
@@ -240,7 +240,7 @@ uv run --no-sync vla-data publish-hf \
 
 ## 13. Step 7 — Pinned Remote Verification
 
-用途：对精确 HF commit 做 private、文件 hash、LeRobot 结构和来源追踪验收。Step 6 已自动执行一次；以下命令只用于**额外的独立复核**。
+用途：对精确 HF commit 做可见性记录、文件 hash、LeRobot 结构和来源追踪验收。Step 6 已自动执行一次；以下命令只用于**额外的独立复核**。
 
 输入：精确 `HF_REVISION`，以及与该 revision 上传前字节一致的**完整 merged dataset 本地副本**。输出：只读验收证据。
 
@@ -266,7 +266,7 @@ uv run --no-sync vla-data publish-hf \
 
 成功标准：
 
-- `private=true`，`resolved_sha` 等于请求的 SHA，`canonical_file_mismatches=0`；
+- `private` 如实记录仓库可见性（`true` / `false` 均支持），`resolved_sha` 等于请求的 SHA，`canonical_file_mismatches=0`；
 - 官方 LeRobot reload PASS，episode/frame 数正确；
 - state/action 为 `float32[17]`，head/wrist 可加载；
 - task/hash、`source_episode_id` 与 `[source_start_index, source_end_index)` 一致。
@@ -302,7 +302,7 @@ D4 semantic annotation、D5 verification、LIBERO benchmark 与 OpenPI compatibi
 | --- | --- |
 | `NO_NEW_EPISODES` | incoming 已全部存在于远端；这是正常幂等结果，不是错误。 |
 | `unknown remote files` | 停止并核对仓库内容；不要用 `--force` 覆盖。 |
-| HF repo 为 public | 必须先由仓库管理者设为 private；发布器不会向 public repo 写入。 |
+| HF repo 为 public | 支持完整 Dry Run、累计发布和远端验收；仍须具备写权限。发布器不会自动修改可见性。 |
 | fresh cache not empty | 重新用 `mktemp -d -p "$WORK_ROOT" hf_verify_XXXXXXXX` 创建空目录。 |
 | D3 no clean transition | 该 source 不导出；检查质量报告，不拼接无效区间。 |
 | duplicate runs | 与远端重合会自动去重；incoming 内部重复同一来源 run 会拒绝。 |
@@ -332,7 +332,7 @@ uv run --no-sync pytest -q
 
 打开 `http://127.0.0.1:8765`。服务默认仅监听本机 loopback；在启动终端按 `Ctrl-C` 关闭。浏览器关闭或刷新不会删除已提交的 backend job，处理记录保存在本机 SQLite。首次使用 HF 功能之前，由机器管理员在终端完成本机 `hf auth login`；UI 不接收、显示或保存 token。
 
-配置集中在 [`config/ui.toml`](config/ui.toml)：允许的数据/RAW 根目录、UI 状态目录、现有 LeRobot/HF Python、UV cache、默认 private HF repo、监听地址/端口。Run 列表只能浏览 allowlist 内的已配置根目录，不能输入任意文件路径。`batch4_acceptance` 是 003–006 历史验收工件的**只读**映射：可看报告、重新执行本地验证和 HF Dry Run，但不可清洗、重导出或正式上传。当前 `PPPPPilot/VLADexData` 只是默认 repo ID，真实 HEAD 总是实时读取，不写死历史 SHA。
+配置集中在 [`config/ui.toml`](config/ui.toml)：允许的数据/RAW 根目录、UI 状态目录、现有 LeRobot/HF Python、UV cache、默认 HF repo（支持 private/public）、监听地址/端口。Run 列表只能浏览 allowlist 内的已配置根目录，不能输入任意文件路径。`batch4_acceptance` 是 003–006 历史验收工件的**只读**映射：可看报告、重新执行本地验证和 HF Dry Run，但不可清洗、重导出或正式上传。当前 `PPPPPilot/VLADexData` 只是默认 repo ID，真实 HEAD 总是实时读取，不写死历史 SHA。
 
 数采人员标准操作：
 
@@ -340,7 +340,7 @@ uv run --no-sync pytest -q
 2. 点击「开始数据清洗」，等待物理数据检查和质量检查；`ACCEPT_WITH_WARNING` 可继续，但应查看警告。已有清洗结果可直接使用，重新运行需要二次确认。
 3. 检查 Episode 表；失败项可点击「查看 D2 诊断」，分别核对原始 D2 rejection evidence 与只读 RAW-derived root cause。Rejection Groups 可能重叠，RAW 诊断不会替换 D2 reason，也不能作为降低清洗门槛的依据。确认后再点击「生成 LeRobot 数据集」。默认验证集比例为 `0.1`、数据划分随机种子为 `17`；小批次不保证产生 val split。
 4. 点击「验证 LeRobot 数据集」。未通过时 HF 阶段被阻断。
-5. 在 Hugging Face 页确认私有 repo 和账户，点击「检查 HF 上传计划」。这是只读 Dry Run，核对重复数、新增数、期望总数和 baseline SHA。`NO_NEW_EPISODES` 表示无需重复上传，上传按钮不可用。
+5. 在 Hugging Face 页确认目标 repo、可见性和账户，点击「检查 HF 上传计划」。这是只读 Dry Run，核对重复数、新增数、期望总数和 baseline SHA。`NO_NEW_EPISODES` 表示无需重复上传，上传按钮不可用。
 6. 仅在确有新增 episode 时，点击「上传到 Hugging Face」，核对二次确认弹窗并勾选确认。随后等待固定 commit SHA 的 fresh download、hash 比对和官方 LeRobot 回读均通过；若远端验收失败，不能视作发布成功。
 
 UI 不提供修改 RAW、task、provenance、HF 删除/覆盖、OpenPI 训练或机器人控制。页面请求只允许固定的 pipeline 动作，服务端校验路径与参数，且全局一次只执行一个 job。日志做 token/secret 基础脱敏；出错时保留报告与 job 日志供数据工程人员排查。UI metadata 位于配置的 `state_dir`，不写入 RAW。

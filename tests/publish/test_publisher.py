@@ -15,7 +15,6 @@ from vla_data.publish import (
     AuthRequiredError,
     InvalidDatasetRootError,
     RemoteNotEmptyError,
-    RemotePrivacyError,
     RemoteValidationError,
     build_canonical_manifest,
     validate_remote,
@@ -149,14 +148,15 @@ def _mock_upload_merge(monkeypatch):
     )
 
 
-@pytest.fixture
-def hub(hf_dataset_root, monkeypatch, tmp_path):
+@pytest.fixture(params=[True, False], ids=["private", "public"])
+def hub(hf_dataset_root, monkeypatch, tmp_path, request):
     fake = FakeHub(
         _state(
             _matching_remote(hf_dataset_root),
             snapshot=_prepare_snapshot(hf_dataset_root, tmp_path),
         )
     )
+    fake.state["private"] = request.param
     monkeypatch.setattr(publisher_module, "hf_call", fake)
     return fake
 
@@ -183,12 +183,17 @@ def test_valid_current_head_is_only_baseline_no_historical_discovery(
     assert "upload" not in hub.calls
 
 
-def test_empty_remote_uploads_once(hf_dataset_root, monkeypatch, tmp_path) -> None:
+@pytest.mark.parametrize("private", [True, False], ids=["private", "public"])
+def test_empty_remote_uploads_once(
+    hf_dataset_root, monkeypatch, tmp_path, private
+) -> None:
     hub = FakeHub(_state([], snapshot=tmp_path))
+    hub.state["private"] = private
     monkeypatch.setattr(publisher_module, "hf_call", hub)
     _mock_upload_merge(monkeypatch)
     result = publish_dataset(hf_dataset_root, REPO)
     assert result["action"] == "UPLOADED"
+    assert result["remote_before"]["private"] is private
     assert result["commit_sha"] == "deadbeef" * 5
     assert result["uploaded_file_count"] == 8  # canonical + new README
     assert len(hub.uploads) == 1
@@ -323,15 +328,15 @@ def test_unknown_remote_files_report_blocked_in_dry_run(hf_dataset_root, hub) ->
     assert "upload" not in hub.calls
 
 
-def test_public_remote_is_a_hard_safety_stop(hf_dataset_root, hub) -> None:
-    hub.state["private"] = False
-    with pytest.raises(RemotePrivacyError, match="private dataset repository"):
+@pytest.mark.parametrize("visibility", [None, "public", 0, 1])
+def test_unknown_visibility_is_a_hard_stop(hf_dataset_root, hub, visibility) -> None:
+    hub.state["private"] = visibility
+    with pytest.raises(RemoteValidationError, match="visibility is unknown"):
         publish_dataset(hf_dataset_root, REPO)
     assert "upload" not in hub.calls
 
-    result = publish_dataset(hf_dataset_root, REPO, dry_run=True)
-    assert result["action"] == "BLOCKED"
-    assert result["would_action"] == "BLOCKED_PUBLIC_REPOSITORY"
+    with pytest.raises(RemoteValidationError, match="visibility is unknown"):
+        publish_dataset(hf_dataset_root, REPO, dry_run=True)
 
 
 @pytest.mark.parametrize(
@@ -437,9 +442,13 @@ def _prepare_snapshot(hf_dataset_root, tmp_path) -> Path:
     return snapshot
 
 
-def test_validate_remote_full_pass(hf_dataset_root, monkeypatch, tmp_path) -> None:
+@pytest.mark.parametrize("private", [True, False], ids=["private", "public"])
+def test_validate_remote_full_pass(
+    hf_dataset_root, monkeypatch, tmp_path, private
+) -> None:
     snapshot = _prepare_snapshot(hf_dataset_root, tmp_path)
     hub = FakeHub(_state([], snapshot=snapshot))
+    hub.state["private"] = private
     monkeypatch.setattr(publisher_module, "hf_call", hub)
     monkeypatch.setattr(publisher_module, "_official_reload", lambda **kw: _reload_ok())
     result = validate_remote(
@@ -453,9 +462,10 @@ def test_validate_remote_full_pass(hf_dataset_root, monkeypatch, tmp_path) -> No
     assert result["canonical_file_mismatches"] == 0
     assert result["lerobot"]["reload_pass"] is True
     assert result["resolved_sha"] == REVISION
+    assert result["private"] is private
 
 
-def test_remote_verification_requires_fresh_cache_and_pinned_private_revision(
+def test_remote_verification_requires_fresh_cache_and_pinned_revision(
     hf_dataset_root, monkeypatch, tmp_path
 ) -> None:
     snapshot = _prepare_snapshot(hf_dataset_root, tmp_path)
@@ -650,10 +660,12 @@ def _file_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def test_validate_remote_listing_pass(hf_dataset_root, monkeypatch) -> None:
+@pytest.mark.parametrize("private", [True, False], ids=["private", "public"])
+def test_validate_remote_listing_pass(hf_dataset_root, monkeypatch, private) -> None:
     from vla_data.publish.publisher import validate_remote_listing
 
     hub = FakeHub(_state(_matching_remote(hf_dataset_root)))
+    hub.state["private"] = private
     monkeypatch.setattr(publisher_module, "hf_call", hub)
     result = validate_remote_listing(
         hf_dataset_root, REPO, REVISION, hf_python="python"
@@ -661,10 +673,13 @@ def test_validate_remote_listing_pass(hf_dataset_root, monkeypatch) -> None:
     assert result["mode"] == "listing"
     assert result["canonical_file_mismatches"] == 0
     assert result["canonical_file_count"] == 7
+    assert result["private"] is private
     assert "verify_files" not in hub.calls  # all canonical files are LFS-listed
 
 
-def test_validate_remote_listing_detects_corruption(hf_dataset_root, monkeypatch) -> None:
+def test_validate_remote_listing_detects_corruption(
+    hf_dataset_root, monkeypatch
+) -> None:
     from vla_data.publish.publisher import validate_remote_listing
 
     listing = _matching_remote(hf_dataset_root)
@@ -675,7 +690,9 @@ def test_validate_remote_listing_detects_corruption(hf_dataset_root, monkeypatch
         validate_remote_listing(hf_dataset_root, REPO, REVISION, hf_python="python")
 
 
-def test_validate_remote_listing_detects_missing_file(hf_dataset_root, monkeypatch) -> None:
+def test_validate_remote_listing_detects_missing_file(
+    hf_dataset_root, monkeypatch
+) -> None:
     from vla_data.publish.publisher import validate_remote_listing
 
     hub = FakeHub(_state(_matching_remote(hf_dataset_root)[1:]))
@@ -684,12 +701,14 @@ def test_validate_remote_listing_detects_missing_file(hf_dataset_root, monkeypat
         validate_remote_listing(hf_dataset_root, REPO, REVISION, hf_python="python")
 
 
+@pytest.mark.parametrize("private", [True, False], ids=["private", "public"])
 def test_publish_auto_mode_promotes_to_listing_after_first_full_audit(
-    hf_dataset_root, monkeypatch, tmp_path
+    hf_dataset_root, monkeypatch, tmp_path, private
 ) -> None:
     import json as _json
 
     hub = FakeHub(_state([], snapshot=tmp_path))
+    hub.state["private"] = private
     monkeypatch.setattr(publisher_module, "hf_call", hub)
     _mock_upload_merge(monkeypatch)
     first = publish_dataset(
@@ -697,8 +716,9 @@ def test_publish_auto_mode_promotes_to_listing_after_first_full_audit(
     )
     assert first["action"] == "UPLOADED"
     counter = _json.loads(
-        (tmp_path / "cache" / REPO.replace("/", "__") / ".verification_counter.json")
-        .read_text()
+        (
+            tmp_path / "cache" / REPO.replace("/", "__") / ".verification_counter.json"
+        ).read_text()
     )
     assert counter["successful_publishes"] == 1
     # The second publish no longer runs the mocked full download audit; it
@@ -709,8 +729,10 @@ def test_publish_auto_mode_promotes_to_listing_after_first_full_audit(
     )
     assert second["action"] == "UPLOADED"
     assert second["remote_validation"]["mode"] == "listing"
+    assert second["remote_validation"]["private"] is private
     counter = _json.loads(
-        (tmp_path / "cache" / REPO.replace("/", "__") / ".verification_counter.json")
-        .read_text()
+        (
+            tmp_path / "cache" / REPO.replace("/", "__") / ".verification_counter.json"
+        ).read_text()
     )
     assert counter["successful_publishes"] == 2

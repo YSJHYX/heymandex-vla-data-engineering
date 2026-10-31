@@ -86,7 +86,7 @@ def execute(request: dict) -> dict:
             raise RuntimeError("本地验证失败：" + "; ".join(result.errors))
         return {"validation": {"passed": True, "evidence": result.evidence}}
     if stage == "hf-dry-run":
-        emit("log", {"message": "读取私有 HF HEAD 并计算累计计划（不会上传）"})
+        emit("log", {"message": "读取 HF HEAD 并计算累计计划（不会上传）"})
         result = publish_dataset(
             export / "train",
             request["repo_id"],
@@ -104,10 +104,10 @@ def execute(request: dict) -> dict:
             "repo_state", {"repo_id": request["repo_id"]}, request["hf_python"]
         )
         if (
-            state.get("private") is not True
+            not isinstance(state.get("private"), bool)
             or state.get("sha") != request["baseline_sha"]
         ):
-            raise RuntimeError("HF HEAD 或私有状态已变化，请重新执行 Dry Run")
+            raise RuntimeError("HF HEAD 已变化或仓库状态未确认，请重新执行 Dry Run")
         emit("log", {"message": "开始累计发布；将自动进行远端固定 revision 验收"})
         result = publish_dataset(
             export / "train",

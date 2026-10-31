@@ -169,9 +169,10 @@ def test_manifest_fingerprint_changes_with_content(hf_dataset_root) -> None:
     assert first["fingerprint"] != second["fingerprint"]
 
 
-def test_readme_carries_private_production_contract(hf_dataset_root) -> None:
+def test_readme_carries_production_contract(hf_dataset_root) -> None:
     layout = validate_dataset_root(hf_dataset_root)
     readme = build_readme(layout["tasks"], layout["fps"])
-    assert "PRIVATE_TRAINING_DATASET" in readme
+    assert "Status: TRAINING_DATASET" in readme
+    assert "PRIVATE_TRAINING_DATASET" not in readme
     assert "measured 17D state" in readme
     assert "exact collection-time task instructions" in readme

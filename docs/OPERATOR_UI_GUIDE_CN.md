@@ -5,7 +5,7 @@
 
 ## 1. 这个系统是做什么的？
 
-它把已完成的真机数采变成经过检查、可发布的训练数据：真机数采 → RAW 原始数据 → 自动清洗 → 数据质量检查 → LeRobot 数据集 → 私有 Hugging Face（HF）数据集仓库。界面不负责 π0.5 训练、机器人推理或机器人控制，也不会代替数采程序录制数据。
+它把已完成的真机数采变成经过检查、可发布的训练数据：真机数采 → RAW 原始数据 → 自动清洗 → 数据质量检查 → LeRobot 数据集 → Hugging Face（HF）数据集仓库（Private/Public 均支持）。界面不负责 π0.5 训练、机器人推理或机器人控制，也不会代替数采程序录制数据。
 
 ## 2. 数据处理流程图
 
@@ -113,7 +113,7 @@ host = "127.0.0.1"
 port = 8765
 ```
 
-`allowed_data_roots` 限定 UI 可看到的批次根目录；`allowed_raw_roots` 限定 RAW 来源；`state_dir` 保存本机任务数据库/日志，不写到 RAW；`default_hf_repo` 是默认私有 Dataset Repo ID，不是登录凭据；`uv_cache_dir` 是缓存；`lerobot_python` 是可通过官方 LeRobot API 回读 v2.1 数据集的解释器；`hf_python` 是可调用 `huggingface_hub` 的解释器；`host` 必须保持本机 loopback，`port` 默认为 8765。
+`allowed_data_roots` 限定 UI 可看到的批次根目录；`allowed_raw_roots` 限定 RAW 来源；`state_dir` 保存本机任务数据库/日志，不写到 RAW；`default_hf_repo` 是默认 Dataset Repo ID，不是登录凭据；`uv_cache_dir` 是缓存；`lerobot_python` 是可通过官方 LeRobot API 回读 v2.1 数据集的解释器；`hf_python` 是可调用 `huggingface_hub` 的解释器；`host` 必须保持本机 loopback，`port` 默认为 8765。
 
 现有文件另外包含历史 `batch4_acceptance` 的只读 `run_overrides`：它专门指向旧机器桌面上的共享 RAW，并仅允许 003–006。**新电脑不要照搬这些历史路径**，应由数据工程人员按新机器实际情况处理；普通新批次不需要 override。配置路径可由 `--config` 选择；不要把 HF token 写入此文件。
 
@@ -125,7 +125,7 @@ port = 8765
 
 ### 9.2 获取 Access Token
 
-登录 HF 网站，进入头像菜单的 `Settings` → `Access Tokens`。为目标**私有 dataset repo** 创建最小权限 token：优先使用限定该仓库的 fine-grained token，授予读取私有仓库和写入该仓库所需权限；只读 token 无法上传。不要授予与本任务无关的组织/仓库权限。官方权限说明：<https://huggingface.co/docs/hub/security-tokens>。
+登录 HF 网站，进入头像菜单的 `Settings` → `Access Tokens`。为目标 **dataset repo** 创建最小权限 token：优先使用限定该仓库的 fine-grained token，授予读取和写入目标仓库所需权限（私有仓库需包含私有读取权限）；只读 token 无法上传。不要授予与本任务无关的组织/仓库权限。官方权限说明：<https://huggingface.co/docs/hub/security-tokens>。
 
 ### 9.3 在终端登录
 
@@ -150,7 +150,7 @@ hf auth login
 hf auth whoami
 ```
 
-应看到实际登录用户或组织，例如 `PPPPPilot`；不是这个身份就先联系管理员。CLI 登录只是基本检查，还须在 UI 的 HF 页确认目标仓库可读、为 Private、具有发布权限。配置的 `hf_python` 环境也必须能使用该账号的 HF 凭据。
+应看到实际登录用户或组织，例如 `PPPPPilot`；不是这个身份就先联系管理员。CLI 登录只是基本检查，还须在 UI 的 HF 页确认目标 Dataset 仓库可读且具有发布权限（Private/Public 均支持）。配置的 `hf_python` 环境也必须能使用该账号的 HF 凭据。
 
 ### 9.5 Token 安全
 
@@ -158,7 +158,7 @@ hf auth whoami
 
 ## 10. 创建 HF Dataset Repo
 
-先由具备权限的人员在 HF 网页创建 **Dataset** 类型仓库，Visibility 选择 **Private**，例如 `PPPPPilot/VLADexData`；不是 Model Repo 或 Space。仓库可以为空，但必须由当前账号可读且可写。UI 不会向 Public Repo 正式发布。如果发现已是 Public，不要继续，也不要随意迁移或删除；联系仓库管理员。
+先由具备权限的人员在 HF 网页创建 **Dataset** 类型仓库，Visibility 可以选择 **Private** 或 **Public**，例如 `PPPPPilot/VLADexData`；不是 Model Repo 或 Space。仓库可以为空，但必须由当前账号可读且可写。两种可见性均支持完整上传流程；系统如实显示可见性，不会自动修改。
 
 ## 11. 如何放置数采数据
 
@@ -233,7 +233,7 @@ export UV_CACHE_DIR=/data/uv-cache
 
 ## 18. Stage 5：HF Dry Run
 
-切到“Hugging Face”页，确认登录账户与 Private 仓库，再点“检查 HF 上传计划”。Dry Run 只读取当前远端状态并计算计划，**不会上传**。重点看“远端已有 Episode”“本批输入 Episode”“重复 Episode”“新增 Episode”“上传后 Episode 总量”。例如远端已有 100、本批输入 20、重复 5、新增 15，预期总量是 115。若数字与预期不符，暂停并联系工程人员；不要反复点击正式上传试错。
+切到“Hugging Face”页，确认登录账户、目标仓库及其可见性，再点“检查 HF 上传计划”。Dry Run 只读取当前远端状态并计算计划，**不会上传**。重点看“远端已有 Episode”“本批输入 Episode”“重复 Episode”“新增 Episode”“上传后 Episode 总量”。例如远端已有 100、本批输入 20、重复 5、新增 15，预期总量是 115。若数字与预期不符，暂停并联系工程人员；不要反复点击正式上传试错。
 
 ## 19. `NO_NEW_EPISODES` 是什么？
 
@@ -241,7 +241,7 @@ export UV_CACHE_DIR=/data/uv-cache
 
 ## 20. Stage 6：HF 正式发布
 
-这是**真正修改远端 HF 数据集**的步骤。先仔细核对最新 Dry Run 的仓库、重复数、新增数、预期总量和远端基准 Commit SHA。只有确认确有新增、目标仓库为 Private、本地验证通过时，点击“上传到 Hugging Face”，在弹窗中再次核对并勾选确认。点击后等待任务完成；不要关闭电脑或中断网络，不要同时从另一台机器发布同一仓库。
+这是**真正修改远端 HF 数据集**的步骤。先仔细核对最新 Dry Run 的仓库、重复数、新增数、预期总量和远端基准 Commit SHA。只有确认确有新增、目标仓库与预期一致且具备写权限、本地验证通过时，点击“上传到 Hugging Face”，在弹窗中再次核对并勾选确认。点击后等待任务完成；不要关闭电脑或中断网络，不要同时从另一台机器发布同一仓库。
 
 ## 21. 上传时系统做什么？
 
@@ -276,7 +276,7 @@ Chunk 是 LeRobot 内部组织数据文件的方式，类似把大量帧分块�
 | 表现 | 常见原因 | 现场处理 |
 | --- | --- | --- |
 | HF 未登录/认证不可用 | 本机运行账号未 `hf auth login`，或凭据不适用于配置解释器 | 用同一系统账号运行 `hf auth whoami`；仍失败联系管理员 |
-| 仓库为 Public、正式上传被阻断 | 目标 Dataset Repo 不符合 Private 要求 | 停止，联系仓库管理员，勿自行换到别的 repo |
+| 仓库状态未确认或上传被拒绝 | HF 连接、认证或写权限不可用 | 刷新仓库状态并确认账号权限；Private/Public 均可上传，无需更改可见性 |
 | 找不到 Run 或 RAW 路径错误 | 批次目录不在 `/data/vla_runs`、没有 `raw/`，或权限不足 | 核对完整批次目录及交付路径，不改文件内容 |
 | 原始 Episode 为 0 | 没有符合命名的 `.npz` 或录制未交付完成 | 暂停，核对数采交付；不要造空 Episode |
 | 缺少头部/腕部相机 | 图像目录或相机采集不完整 | 记录 Episode 编号，联系工程人员；不要复制其他帧充数 |
@@ -299,7 +299,7 @@ Chunk 是 LeRobot 内部组织数据文件的方式，类似把大量帧分块�
 □ 开始数据清洗，查看失败/警告 Episode 的中文原因
 □ 生成 LeRobot 数据集（一般保持默认划分选项）
 □ 本地验证 PASS
-□ 确认 HF 登录账户与 Private Dataset Repo
+□ 确认 HF 登录账户、目标 Dataset Repo 及写权限（Private/Public 均支持）
 □ 执行 HF Dry Run，核对重复/新增/预期总数
 □ 人工确认后才执行 HF Publish；无新增则不上传
 □ 远端验证 PASS、官方 LeRobot 回读 PASS、文件比对无差异

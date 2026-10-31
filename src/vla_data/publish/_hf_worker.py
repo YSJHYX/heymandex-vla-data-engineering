@@ -42,9 +42,7 @@ def dispatch(mode: str, request: dict) -> dict:
     if mode == "download":
         return download(request["repo_id"], request["revision"], request["cache_dir"])
     if mode == "verify_files":
-        return verify_files(
-            request["repo_id"], request["revision"], request["files"]
-        )
+        return verify_files(request["repo_id"], request["revision"], request["files"])
     raise ValueError(f"unknown hf worker mode {mode!r}")
 
 
@@ -96,7 +94,7 @@ def repo_state(repo_id: str, revision: str | None = None) -> dict:
     )
     return {
         "exists": True,
-        "private": bool(info.private),
+        "private": info.private,
         "sha": info.sha,
         "files": files,
         "v2_1_tag_sha": version_tag_sha,
@@ -115,7 +113,7 @@ def upload(
         folder_path=staging_dir,
         parent_commit=parent_commit,
         delete_patterns=delete_paths or None,
-        commit_message="Publish private RM65B+SG100 dataset (LeRobot v2.1)",
+        commit_message="Publish RM65B+SG100 dataset (LeRobot v2.1)",
     )
     refs = api.list_repo_refs(repo_id=repo_id, repo_type="dataset")
     if any(getattr(tag, "name", None) == "v2.1" for tag in refs.tags):
@@ -137,8 +135,10 @@ def download(repo_id: str, revision: str, cache_dir: str) -> dict:
     from huggingface_hub import HfApi, snapshot_download
 
     info = HfApi().repo_info(repo_id=repo_id, repo_type="dataset", revision=revision)
-    if info.sha != revision or info.private is not True:
-        raise ValueError("pinned revision or private visibility could not be verified")
+    if info.sha != revision:
+        raise ValueError("pinned revision could not be verified")
+    if not isinstance(info.private, bool):
+        raise TypeError("repository visibility could not be verified")
 
     path = snapshot_download(
         repo_id=repo_id,
@@ -146,7 +146,7 @@ def download(repo_id: str, revision: str, cache_dir: str) -> dict:
         revision=revision,
         cache_dir=cache_dir,
     )
-    return {"snapshot_path": path, "resolved_sha": info.sha, "private": True}
+    return {"snapshot_path": path, "resolved_sha": info.sha, "private": info.private}
 
 
 def verify_files(repo_id: str, revision: str, files: list) -> dict:
@@ -166,8 +166,10 @@ def verify_files(repo_id: str, revision: str, files: list) -> dict:
 
     api = HfApi()
     info = api.repo_info(repo_id=repo_id, repo_type="dataset", revision=revision)
-    if info.sha != revision or info.private is not True:
-        raise ValueError("pinned revision or private visibility could not be verified")
+    if info.sha != revision:
+        raise ValueError("pinned revision could not be verified")
+    if not isinstance(info.private, bool):
+        raise TypeError("repository visibility could not be verified")
 
     mismatches = []
     with tempfile.TemporaryDirectory(prefix="vla_hf_verify_files_") as temporary:

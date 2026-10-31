@@ -39,16 +39,14 @@ class RemoteNotEmptyError(RuntimeError):
 
 
 class RemotePrivacyError(RuntimeError):
-    """Production training datasets must not be published to a public repo."""
+    """The required existing dataset repository is unavailable."""
 
 
 class RemoteValidationError(RuntimeError):
     """The remote snapshot does not match the local canonical dataset."""
 
 
-def _baseline_cache_path(
-    repo_id: str, override: str | Path | None = None
-) -> Path:
+def _baseline_cache_path(repo_id: str, override: str | Path | None = None) -> Path:
     """Persistent per-repo baseline download cache root.
 
     ``snapshot_download`` reuses cached blobs across revisions by content SHA,
@@ -107,19 +105,6 @@ def publish_dataset(
         )
 
     state = _authenticated_repo_state(repo_id, hf_python)
-    if state["private"] is not True:
-        if dry_run:
-            return {
-                "repo_id": repo_id,
-                "action": "BLOCKED",
-                "would_action": "BLOCKED_PUBLIC_REPOSITORY",
-                "local_file_count": manifest["file_count"],
-                "local_bytes": manifest["total_bytes"],
-                "local_fingerprint": manifest["fingerprint"],
-            }
-        raise RemotePrivacyError(
-            "HF publication requires an existing private dataset repository"
-        )
 
     with tempfile.TemporaryDirectory(prefix="vla_hf_cumulative_") as temporary:
         work = Path(temporary)
@@ -171,7 +156,7 @@ def publish_dataset(
             "expert_training_statuses": layout["expert_training_statuses"],
             "local_validation": validation.evidence,
             "remote_before": {
-                "private": True,
+                "private": state["private"],
                 "sha": state["sha"],
                 "file_count": len(state["files"]),
             },
@@ -299,8 +284,8 @@ def validate_remote(
         hf_python,
     )
     snapshot = Path(downloaded["snapshot_path"])
-    if downloaded.get("private") is not True:
-        raise RemoteValidationError("downloaded revision is not confirmed private")
+    if not isinstance(downloaded.get("private"), bool):
+        raise RemoteValidationError("downloaded repository visibility is unknown")
     if downloaded.get("resolved_sha") != revision:
         raise RemoteValidationError(
             "downloaded revision does not match pinned commit SHA"
@@ -343,7 +328,7 @@ def validate_remote(
         "repo_id": repo_id,
         "revision": revision,
         "resolved_sha": downloaded["resolved_sha"],
-        "private": True,
+        "private": downloaded["private"],
         "snapshot_path": str(snapshot),
         "source_export_fingerprint": _source_export_fingerprint(dataset_root),
         "local_fingerprint": manifest["fingerprint"],
@@ -390,11 +375,7 @@ def _resolve_verification_mode(
         count = 0
     # count == 0: first ever publish under the new scheme -> full audit.
     # Otherwise audit fully every N-th publish (count 5, 10, ... with N=5).
-    return (
-        "full"
-        if count == 0 or count % full_audit_every_n == 0
-        else "listing"
-    )
+    return "full" if count == 0 or count % full_audit_every_n == 0 else "listing"
 
 
 def _advance_verification_counter(baseline_cache: Path) -> None:
@@ -434,9 +415,9 @@ def validate_remote_listing(
             "remote verification requires an exact 40-character commit SHA"
         )
     manifest = build_canonical_manifest(dataset_root)
-    state = hf_call(
-        "repo_state", {"repo_id": repo_id, "revision": revision}, hf_python
-    )
+    state = hf_call("repo_state", {"repo_id": repo_id, "revision": revision}, hf_python)
+    if not isinstance(state.get("private"), bool):
+        raise RemoteValidationError("remote repository visibility is unknown")
     if state.get("sha") != revision:
         raise RemoteValidationError(
             "remote listing revision does not match the pinned commit SHA"
@@ -486,8 +467,7 @@ def validate_remote_listing(
         )
         if small_checked.get("mismatches"):
             raise RemoteValidationError(
-                "small-file mismatches: "
-                f"{json.dumps(small_checked['mismatches'][:5])}"
+                f"small-file mismatches: {json.dumps(small_checked['mismatches'][:5])}"
             )
     return {
         "schema_name": "vla_hf_remote_validation",
@@ -540,7 +520,7 @@ def _authenticated_repo_state(repo_id: str, hf_python: str | None) -> dict:
         raise RemotePrivacyError(
             "HF publication requires an existing dataset repository"
         )
-    if state.get("private") not in {True, False}:
+    if not isinstance(state.get("private"), bool):
         raise RemoteValidationError("remote repository visibility is unknown")
     if (
         not isinstance(state.get("files"), list)
@@ -584,11 +564,12 @@ def _download_valid_baseline(
         },
         hf_python,
     )
-    if (
-        downloaded.get("resolved_sha") != state["sha"]
-        or downloaded.get("private") is not True
+    if downloaded.get("resolved_sha") != state["sha"] or not isinstance(
+        downloaded.get("private"), bool
     ):
-        raise RemoteValidationError("baseline download is not pinned and private")
+        raise RemoteValidationError(
+            "baseline download is not pinned or repository visibility is unknown"
+        )
     snapshot = Path(downloaded["snapshot_path"])
     layout = validate_dataset_root(snapshot)
     manifest = build_canonical_manifest(snapshot)
