@@ -286,6 +286,14 @@ uv run --no-sync vla-data publish-hf \
 
 重复上传同一 batch：`DUPLICATES=N`、`TO_APPEND=0`、`NO_NEW_EPISODES`，不产生新 commit。部分重叠例如 remote 10 episodes、incoming 4（其中 2 已有），结果是 2 duplicates、2 append、12 total。publisher 对已在远端的来源 run 自动去重；incoming 自身重复来源 run 则拒绝，避免含糊数据。
 
+AVP recorder 的 `episode_XXXXXX_media/metadata.json` 可携带独立的
+`episode_tags`：`failure_recovery` 表示“失败后恢复的数据”，`dagger` 表示
+“DAgger数据”。两者可同时存在，缺失标签的旧数据不会被推断为纠错数据。
+标签经 Curated metadata、导出 provenance 传递；D2/D3、筛选、17D 数据和
+既有验证流程保持不变。上传前在最终 `meta/episodes.jsonl` 的对应 episode
+写入 `episode_tags` 和中文 `episode_tag_labels`，`meta/source_provenance.jsonl`
+也保留机器可读标签。累计发布时按最终 episode 编号关联，保留既有条目标签。
+
 ## 15. 当前已验证 Baseline
 
 `PPPPPilot/VLADexData@2347702eed03bb3b4a54c1f4598c47c98e804e45` 是初始有效累计 baseline：4 episodes、1055 frames、task `grab the ball`。当前正常发布始终校验**现有有效 HEAD**，此 SHA 只是历史起点，不是写死的软件常量。

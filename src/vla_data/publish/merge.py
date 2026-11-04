@@ -9,6 +9,7 @@ import subprocess
 from collections.abc import Collection
 from pathlib import Path
 
+from vla_data.episode_tags import EPISODE_TAG_LABELS, episode_tags
 from vla_data.export.camera_transform import (
     camera_export_transform_contract,
     has_current_camera_export_transform,
@@ -291,6 +292,7 @@ def rebuild_logical_dataset(
     provenance.write_text(
         "".join(json.dumps(row, sort_keys=True) + "\n" for row in plan["provenance"])
     )
+    _write_episode_tags(output, plan["provenance"])
     if (
         result["episodes"] != plan["merged_episodes"]
         or result["frames"] != plan["merged_frames"]
@@ -298,3 +300,27 @@ def rebuild_logical_dataset(
         raise InvalidDatasetRootError("merged counts differ from logical plan")
     validate_dataset_root(output)
     return result
+
+
+def _write_episode_tags(output: Path, provenance: list[dict]) -> None:
+    """Annotate final HF episode metadata after LeRobot has rebuilt the data."""
+    tagged = {
+        source["lerobot_episode_index"]: tags
+        for source in provenance
+        if (tags := episode_tags(source))
+    }
+    if not tagged:
+        return
+    path = output / "meta" / "episodes.jsonl"
+    rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    for row in rows:
+        tags = tagged.get(row["episode_index"])
+        if tags:
+            row["episode_tags"] = tags
+            row["episode_tag_labels"] = [EPISODE_TAG_LABELS[tag] for tag in tags]
+    path.write_text(
+        "".join(
+            json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in rows
+        ),
+        encoding="utf-8",
+    )

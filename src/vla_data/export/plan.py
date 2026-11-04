@@ -11,6 +11,7 @@ from PIL import Image
 
 from vla_data.annotation.eligibility import EligibilityError, evaluate_eligibility
 from vla_data.batch.discovery import discover_curated_episodes
+from vla_data.episode_tags import episode_tags
 from vla_data.export.camera_transform import camera_export_transform_contract
 from vla_data.io.curated_episode import CuratedEpisode
 from vla_data.manifest import SplitConfig
@@ -305,6 +306,7 @@ def make_mainline_plan(
                     "training_use_status": source["training_use_status"],
                     "curated_path": str(loaded.episode_dir),
                     "action_hand_domain": _action_hand_domain(loaded),
+                    "episode_tags": episode_tags(loaded.metadata),
                     "images": images,
                     "camera_transforms": camera_export_transform_contract(),
                     "max_abs_state_cast_error": state_error,
@@ -496,6 +498,7 @@ def make_plan(manifest_root: str | Path, dataset_name: str = "vla-local") -> dic
                     "final_instruction": row["final_instruction"],
                     "curated_path": str(episode.episode_dir),
                     "action_hand_domain": _action_hand_domain(episode),
+                    "episode_tags": episode_tags(episode.metadata),
                     "images": images,
                     "camera_transforms": camera_export_transform_contract(),
                     "max_abs_state_cast_error": state_error,

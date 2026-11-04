@@ -30,6 +30,7 @@ from vla_data.contracts.curated_v1 import (
     STATE_REPRESENTATION,
     STATE_UNIT,
 )
+from vla_data.episode_tags import episode_tags
 from vla_data.io.curated_episode import CuratedEpisode
 from vla_data.io.raw_episode import RawEpisode
 from vla_data.morphology.rm65_sg100 import (
@@ -194,6 +195,9 @@ def _metadata(
             _optional_scalar(raw, "sg100_feedback_map_status", "UNKNOWN")
         ),
     }
+    tags = episode_tags(raw.sidecar_metadata)
+    if tags:
+        metadata["episode_tags"] = tags
     if sync.intervention.present:
         metadata["clean_runs"] = _clean_runs(raw, sync)
     return metadata
