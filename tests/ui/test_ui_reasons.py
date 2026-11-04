@@ -96,8 +96,11 @@ def test_real_d3_warning_pattern() -> None:
 def test_historical_003_006_displayed_under_single_read_only_run() -> None:
     config_file = Path(__file__).resolve().parents[2] / "config" / "ui.toml"
     config = load_config(config_file)
-    if "batch4_acceptance" not in config.list_runs():
-        pytest.skip("历史验收工件在当前机器不可用")
+    if (
+        "batch4_acceptance" not in config.run_overrides
+        or "batch4_acceptance" not in config.list_runs()
+    ):
+        pytest.skip("当前部署未配置或无法访问历史验收工件")
     snapshot = run_snapshot(config.run("batch4_acceptance"))
     assert snapshot["read_only"] is True
     assert snapshot["run"] == "batch4_acceptance"
