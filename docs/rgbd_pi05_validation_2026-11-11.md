@@ -109,3 +109,15 @@ export LD_LIBRARY_PATH=/share/zhuweiwen-local/envs/lerobot-mujoco-imitation/lib
 
 完整测试需设置 `VLA_LEROBOT_PYTHON` 和 `VLA_PI05_TOKENIZER_PATH`，分别指向上述已有
 interpreter 与 tokenizer；命令行可用的 FFmpeg/ffprobe 来自已有环境的 `bin/`。
+
+## 独立八字段 JSONL 导出验收
+
+`export-frame-json` 已从上述真实 LeRobot 数据另行导出
+`frame-json/episode_000000/frames.jsonl`，共 **1043 行**。逐行检查严格包含
+`t, image_top, image_hand, depth_top, depth_hand, joint_pos, action, success` 八字段，
+state/action 均为有限的 17 维数组；2086 个 RGB 相对路径全部存在。
+首末帧各路图片均为 640×480；缺失深度与未知 success 均为 JSON null。
+额外交付文件没有改写标准 LeRobot 数据。图片从标准视频解码为 PNG。
+
+包含新增 JSONL 导出和无 extras 数据导出的专项集成测试 **10 passed**（62.71 秒）；
+CLI、导出规划、基础发布校验相关回归测试 **68 passed, 1 skipped**。

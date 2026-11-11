@@ -12,6 +12,7 @@ from PIL import Image
 from tests.export.test_mainline import _tree
 from vla_data.export import export_lerobot, validate_lerobot_export
 from vla_data.export.frame_extras import enrich_plan, validate_package
+from vla_data.export.json_frames import export_frame_json
 from vla_data.export.plan import make_mainline_plan
 from vla_data.export.runtime import worker_call
 from vla_data.publish.local import (
@@ -225,6 +226,40 @@ def test_rgbd_export_pi05_and_merge_roundtrip(curated_v1_episode, tmp_path):
     )
     assert partial_result["frame_extras"] == {"episodes": 1, "frames": 3}
     assert set(validate_package(partial)) == {2}
+    json_root = tmp_path / "frame-json"
+    json_result = export_frame_json(merged, json_root, lerobot_python=python)
+    assert json_result["frames"] == 5 and json_result["episodes"] == 3
+    json_episode = json_root / "episode_000002"
+    json_rows = [
+        json.loads(line)
+        for line in (json_episode / "frames.jsonl").read_text().splitlines()
+    ]
+    assert len(json_rows) == 3
+    assert set(json_rows[0]) == {
+        "t",
+        "image_top",
+        "image_hand",
+        "depth_top",
+        "depth_hand",
+        "joint_pos",
+        "action",
+        "success",
+    }
+    assert json_rows[-1]["success"] == 1
+    assert len(json_rows[-1]["joint_pos"]) == len(json_rows[-1]["action"]) == 17
+    for name in ("image_top", "image_hand", "depth_top", "depth_hand"):
+        assert (json_episode / json_rows[-1][name]).is_file()
+    with Image.open(json_episode / json_rows[0]["depth_hand"]) as depth:
+        np.testing.assert_array_equal(np.asarray(depth), np.rot90(pixels, 2))
+    legacy_json = tmp_path / "legacy-json"
+    export_frame_json(legacy, legacy_json, lerobot_python=python)
+    first_legacy_row = json.loads(
+        (legacy_json / "episode_000000/frames.jsonl").read_text().splitlines()[0]
+    )
+    assert first_legacy_row["success"] is None
+    assert (
+        first_legacy_row["depth_top"] is None and first_legacy_row["depth_hand"] is None
+    )
     tokenizer = os.environ.get("VLA_PI05_TOKENIZER_PATH")
     if tokenizer:
         batch = worker_call(
@@ -244,3 +279,14 @@ def test_rgbd_export_pi05_and_merge_roundtrip(curated_v1_episode, tmp_path):
     with pytest.raises(ValueError, match="checksum"):
         validate_package(baseline)
     assert not validate_lerobot_export(outputs[0], lerobot_python=python).passed
+
+
+def test_json_export_rejects_input_overlap_and_existing_output(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    with pytest.raises(ValueError, match="separate"):
+        export_frame_json(source, source / "json", lerobot_python="unused")
+    destination = tmp_path / "existing"
+    destination.mkdir()
+    with pytest.raises(ValueError, match="already exists"):
+        export_frame_json(source, destination, lerobot_python="unused")

@@ -16,9 +16,10 @@ import numpy as np
 from PIL import Image
 
 try:
-    from . import frame_extras
+    from . import frame_extras, json_frames
 except ImportError:
     import frame_extras
+    import json_frames
 
 try:
     from .bookkeeping_stats import BOOKKEEPING, validate_bookkeeping_stats
@@ -691,6 +692,7 @@ def main():
         "merge_extras": frame_extras.merge_extras,
         "frame_view": frame_extras.frame_view,
         "pi05_batch": pi05_batch_smoke,
+        "export_frame_json": json_frames.write_json_frames,
     }[mode](request)
     Path(response_path).write_text(json.dumps(result, indent=2) + "\n")
 

@@ -85,6 +85,7 @@ lerobot/
 
 可选 RGB-D / 逐帧成功事件使用独立 sidecar，保持标准 v2.1 训练 features：
 参见 [逐帧扩展、查看与 π0.5 数据验证](docs/frame_extras.md)。
+需要额外的八字段 JSONL 与逐帧图片时，使用其中的 `export-frame-json` 命令。
 
 1. 按下一节设置路径和现有解释器。
 2. Step 1 运行 D2；Step 2 运行 D3。

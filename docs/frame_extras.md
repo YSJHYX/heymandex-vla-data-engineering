@@ -4,6 +4,42 @@
 可选 `--frame-extras` 在每个非空 split 中增加 `extras/`。标准 π0.5 继续读取两路 RGB、
 17 维实测 state、17 维实际生效 action 与原始 task；深度和成功事件仅供追踪、查看或后续研究。
 
+## 独立导出八字段 JSONL
+
+如果需要一份直接包含截图八字段的文件，使用 `export-frame-json`。该命令从一个已有
+LeRobot split root 读取数据，不要求存在 extras，也不改写输入数据集：
+
+```bash
+vla-data export-frame-json \
+  --dataset-root "$EXPORT_ROOT/train" \
+  --output-root /path/to/separate-frame-json \
+  --lerobot-python "$LEROBOT_PYTHON"
+```
+
+每个 episode 输出一个 `episode_000000/frames.jsonl`，每行就是一帧，严格包含以下八字段：
+
+```json
+{
+  "t": 0.0,
+  "image_top": "image_top/000000.png",
+  "image_hand": "image_hand/000000.png",
+  "depth_top": null,
+  "depth_hand": null,
+  "joint_pos": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  "action": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  "success": null
+}
+```
+
+上面向量只是格式示例，实际写入标准 Parquet 中的真实 17 维数值，单位为 rad。
+RGB 从标准 MP4 解码为 PNG，一并放在 JSONL 同级子目录中；图像路径相对于 JSONL 文件，
+可以直接访问，不是仅供追踪的原始文件名。视频中的腕部旋转已经生效，不重复旋转。
+有扩展深度时，复制对应的原始 uint16 PNG；其比例尺和标定仍以原数据集的扩展元数据为准。
+没有深度时写 null；有已知成功标注时写 0/1，未知写 null，避免把未知结果混为失败。
+输出目录必须独立且尚不存在；导出失败不会发布半成品目录。
+
+该 JSONL 是额外交付文件，π0.5 继续消费原来的标准 LeRobot 数据。
+
 | 业务字段 | 实际存储 / 查看方式 |
 | --- | --- |
 | `t` | sidecar 的 episode 局部秒数，对应标准 `timestamp`；浮点精度按标准列验证 |
