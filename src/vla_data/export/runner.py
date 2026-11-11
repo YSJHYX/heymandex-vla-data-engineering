@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 from vla_data.batch.runner import _publish_directory
+from vla_data.export.frame_extras import enrich_plan
 from vla_data.export.plan import make_mainline_plan, make_plan, plan_summary
 from vla_data.export.runtime import worker_call
 from vla_data.export.validator import validate_lerobot_export
@@ -23,6 +24,7 @@ def export_lerobot(
     split_seed: int = 0,
     dataset_name: str = "vla-local",
     lerobot_python: str | Path | None = None,
+    frame_extras: str | Path | None = None,
     force: bool = False,
     dry_run: bool = False,
 ) -> dict:
@@ -51,6 +53,7 @@ def export_lerobot(
         if direct
         else make_plan(manifest_root, dataset_name)
     )
+    plan = enrich_plan(plan, frame_extras)
     output = Path(output_root).absolute()
     if output.is_symlink():
         raise ValueError("export output must not be a symlink")
@@ -60,6 +63,19 @@ def export_lerobot(
         inputs.append(Path(manifest_root).resolve())
     if any(output == p or output in p.parents or p in output.parents for p in inputs):
         raise ValueError("export output must be separate from every input tree")
+    if frame_extras is not None:
+        extension = plan["frame_extras"]
+        assets = [Path(extension["manifest_path"])]
+        for rows in extension["runs"].values():
+            for row in rows:
+                for name in ("depth_top", "depth_hand"):
+                    if row[name] is not None:
+                        assets.extend(
+                            Path(asset["source_path"])
+                            for asset in (row[name], row[name]["calibration"])
+                        )
+        if any(output == path or output in path.parents for path in assets):
+            raise ValueError("export output must be separate from frame-extras inputs")
     summary = {
         **plan_summary(plan),
         "schema_name": "vla_lerobot_export",
@@ -71,6 +87,10 @@ def export_lerobot(
         "manifest_root": plan.get("manifest_root"),
         "dataset_name": dataset_name,
         "camera_transforms": plan["camera_transforms"],
+        "frame_extras_manifest": plan.get("frame_extras", {}).get("manifest_path"),
+        "ignored_frame_extras_source_ticks": plan.get("frame_extras", {}).get(
+            "ignored_source_ticks", []
+        ),
     }
     if dry_run:
         return {**summary, "status": "DRY_RUN"}
@@ -151,6 +171,7 @@ def export_lerobot(
             if direct
             else make_plan(manifest_root, dataset_name)
         )
+        current = enrich_plan(current, frame_extras)
         if current["fingerprint"] != plan["fingerprint"]:
             raise ValueError("source changed during export")
         (staging / "export_validation.json").write_text(

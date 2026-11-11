@@ -8,6 +8,8 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from vla_data.export.frame_extras import validate_package
+
 CANONICAL_PARQUET = "**/*.parquet"
 CANONICAL_MP4 = "**/*.mp4"
 METADATA_DIR = "meta"
@@ -152,8 +154,13 @@ def validate_dataset_root(dataset_root: str | Path) -> dict:
                 raise InvalidDatasetRootError(
                     f"expected one {key} MP4 for episode {episode_index}"
                 )
+    try:
+        extras = validate_package(root)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise InvalidDatasetRootError(f"invalid frame extras: {exc}") from exc
     return {
         "episodes": len(parquet_files),
+        "frame_extras": extras,
         "tasks": tasks,
         "provenance": provenance,
         "fps": info.get("fps"),
@@ -183,6 +190,7 @@ def build_canonical_manifest(dataset_root: str | Path) -> dict:
     paths = sorted(
         [
             *(root / METADATA_DIR).rglob("*"),
+            *(root / "extras").rglob("*"),
             *root.glob(f"data/{CANONICAL_PARQUET}"),
             *root.glob(f"videos/{CANONICAL_MP4}"),
         ],

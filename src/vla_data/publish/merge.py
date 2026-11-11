@@ -13,6 +13,7 @@ from vla_data.export.camera_transform import (
     camera_export_transform_contract,
     has_current_camera_export_transform,
 )
+from vla_data.export.runtime import worker_call
 from vla_data.publish.local import InvalidDatasetRootError, validate_dataset_root
 
 WORKER = Path(__file__).with_name("_merge_worker.py")
@@ -203,6 +204,7 @@ def plan_logical_merge(
     append_indices = []
     duplicate_indices = []
     incoming_seen: set[str] = set()
+    baseline_by_key = {row["source_run_key"]: i for i, row in enumerate(rows)}
     for local_index, source in enumerate(incoming["provenance"]):
         source = _require_current_incoming_camera_provenance(source)
         key, raw_hash, raw_kind, original_task_hash = _source_key(source)
@@ -210,6 +212,14 @@ def plan_logical_merge(
             raise UnverifiableProvenanceError("incoming batch repeats a source run")
         incoming_seen.add(key)
         if key in existing:
+            prior_extra = baseline["frame_extras"].get(baseline_by_key[key])
+            next_extra = incoming["frame_extras"].get(local_index)
+            if (prior_extra or {}).get("source_fingerprint") != (next_extra or {}).get(
+                "source_fingerprint"
+            ):
+                raise InvalidDatasetRootError(
+                    "duplicate source run has different frame extras; explicit dataset rebuild required"
+                )
             duplicate_indices.append(local_index)
             continue
         existing.add(key)
@@ -291,6 +301,28 @@ def rebuild_logical_dataset(
     provenance.write_text(
         "".join(json.dumps(row, sort_keys=True) + "\n" for row in plan["provenance"])
     )
+    mappings = (
+        [
+            {"root": str(Path(baseline_root).resolve()), "old": index, "new": index}
+            for index in range(plan["baseline_episodes"])
+        ]
+        if baseline_root
+        else []
+    )
+    mappings.extend(
+        {
+            "root": str(Path(incoming_root).resolve()),
+            "old": index,
+            "new": plan["baseline_episodes"] + offset,
+        }
+        for offset, index in enumerate(plan["append_indices"])
+    )
+    if any((Path(mapping["root"]) / "extras").exists() for mapping in mappings):
+        result["frame_extras"] = worker_call(
+            "merge_extras",
+            {"output_root": str(output.resolve()), "episodes": mappings},
+            lerobot_python,
+        )
     if (
         result["episodes"] != plan["merged_episodes"]
         or result["frames"] != plan["merged_frames"]

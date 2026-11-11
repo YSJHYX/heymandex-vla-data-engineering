@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from vla_data.export.frame_extras import enrich_plan
 from vla_data.export.plan import make_mainline_plan, make_plan
 from vla_data.export.runtime import worker_call
 from vla_data.manifest import SplitConfig
@@ -51,6 +52,7 @@ def validate_lerobot_export(
             plan = make_plan(
                 manifest_root or summary["manifest_root"], summary["dataset_name"]
             )
+        plan = enrich_plan(plan, summary.get("frame_extras_manifest"))
         if summary["fingerprint"] != plan["fingerprint"]:
             raise ValueError("export fingerprint is stale")
         provenance = [
