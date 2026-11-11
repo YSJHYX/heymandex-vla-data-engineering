@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 import tempfile
 from contextlib import ExitStack
 from pathlib import Path
@@ -12,7 +11,7 @@ from PIL import Image
 
 
 def export_frame_json(dataset_root, output_root, *, lerobot_python):
-    """Publish a separate JSONL + image directory only after export succeeds."""
+    """Export a LeRobot root (or its train/val roots) into a separate directory."""
     from vla_data.export.runtime import worker_call
 
     source = Path(dataset_root).resolve(strict=True)
@@ -29,20 +28,32 @@ def export_frame_json(dataset_root, output_root, *, lerobot_python):
     if destination.exists():
         raise ValueError("JSON output already exists; choose a new output directory")
     destination.parent.mkdir(parents=True, exist_ok=True)
+    sources = (
+        {"": source}
+        if (source / "meta/info.json").is_file()
+        else {
+            split: source / split
+            for split in ("train", "val")
+            if (source / split / "meta/info.json").is_file()
+        }
+    )
+    if not sources:
+        raise ValueError("no LeRobot datasets found for JSON export")
     with tempfile.TemporaryDirectory(
         prefix=".frame-json-", dir=destination.parent
     ) as temporary:
         staging = Path(temporary) / "dataset"
-        result = worker_call(
-            "export_frame_json",
-            {
-                "dataset_root": str(source),
-                "output_root": str(staging),
-            },
-            lerobot_python,
-        )
+        if "" not in sources:
+            staging.mkdir()
+        results = {}
+        for split, root in sources.items():
+            results[split or "dataset"] = worker_call(
+                "export_frame_json",
+                {"dataset_root": str(root), "output_root": str(staging / split)},
+                lerobot_python,
+            )
         staging.rename(destination)
-    return {**result, "output_root": str(destination)}
+    return {"output_root": str(destination), "splits": results}
 
 
 def write_json_frames(request):
@@ -50,11 +61,6 @@ def write_json_frames(request):
     import av
     import numpy as np
     import pyarrow.parquet as pq
-
-    try:
-        from .frame_extras import validate_tables
-    except ImportError:
-        from frame_extras import validate_tables
 
     source, output = Path(request["dataset_root"]), Path(request["output_root"])
     info = json.loads((source / "meta/info.json").read_text())
@@ -64,7 +70,6 @@ def write_json_frames(request):
         feature = info["features"][key]
         if feature["dtype"] != "float32" or feature["shape"] != [17]:
             raise ValueError("JSON export requires physical float32[17] state/action")
-    validate_tables(source)
     episodes = [
         json.loads(line)
         for line in (source / "meta/episodes.jsonl").read_text().splitlines()
@@ -79,12 +84,6 @@ def write_json_frames(request):
         native = pq.read_table(source / info["data_path"].format(**paths)).to_pylist()
         if len(native) != count:
             raise ValueError("JSON source Parquet/episode frame count mismatch")
-        extras = source / "extras/episodes" / f"episode_{index:06d}"
-        sidecars = (
-            pq.read_table(extras / "frames.parquet").to_pylist()
-            if (extras / "frames.parquet").is_file()
-            else None
-        )
         directory = output / f"episode_{index:06d}"
         directory.mkdir()
         with ExitStack() as stack:
@@ -119,21 +118,11 @@ def write_json_frames(request):
                         directory / relative, compress_level=1
                     )
                     row[name] = relative
-                extra = sidecars[frame] if sidecars is not None else None
                 for name in ("depth_top", "depth_hand"):
                     row[name] = None
-                    if extra is not None and extra[f"{name}_valid"]:
-                        relative = f"{name}/{frame:06d}.png"
-                        (directory / name).mkdir(exist_ok=True)
-                        shutil.copyfile(extras / extra[name], directory / relative)
-                        row[name] = relative
                 row["joint_pos"] = native_row["observation.state"]
                 row["action"] = native_row["action"]
-                row["success"] = (
-                    int(extra["success"])
-                    if extra is not None and extra["success_valid"]
-                    else None
-                )
+                row["success"] = None
                 for key in ("joint_pos", "action"):
                     if len(row[key]) != 17 or not np.isfinite(row[key]).all():
                         raise ValueError("JSON requires finite 17-dimensional vectors")

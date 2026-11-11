@@ -16,10 +16,9 @@ import numpy as np
 from PIL import Image
 
 try:
-    from . import frame_extras, json_frames
-except ImportError:
-    import frame_extras
-    import json_frames
+    from .json_frames import write_json_frames
+except ImportError:  # Standalone execution in the existing LeRobot environment.
+    from json_frames import write_json_frames
 
 try:
     from .bookkeeping_stats import BOOKKEEPING, validate_bookkeeping_stats
@@ -159,7 +158,6 @@ def write(request):
                     dataset.add_frame(frame)
             dataset.save_episode()
         dataset.stop_image_writer()
-    frame_extras.write_extras(plan, output)
     return {"written_runs": len(plan["runs"])}
 
 
@@ -305,8 +303,7 @@ def validate(request):
         )
         require(len(list(root.rglob("*.mp4"))) == len(runs) * 2, "MP4 count mismatch")
         require(
-            len(list((root / "data").rglob("*.parquet"))) == len(runs),
-            "Parquet count mismatch",
+            len(list(root.rglob("*.parquet"))) == len(runs), "Parquet count mismatch"
         )
         for key in ("observation.state", "action"):
             require(
@@ -421,7 +418,6 @@ def validate(request):
         evidence["total_frames"] == sum(r["transition_count"] for r in plan["runs"]),
         "frame accounting mismatch",
     )
-    evidence["frame_extras"] = frame_extras.validate_against_plan(plan, output)
     return evidence
 
 
@@ -523,159 +519,6 @@ def openpi_smoke(request):
     }
 
 
-def pi05_batch_smoke(request):
-    """Offline official PI05 normalization/tokenization/one-batch validation.
-
-    Validation-only adapter: two actual cameras plus a masked missing left wrist.
-    No model weights, optimizer, training or inference are run.
-    """
-    import shutil
-
-    cache = Path(os.environ["HF_HOME"]).parent / "openpi"
-    target = cache / "big_vision/paligemma_tokenizer.model"
-    target.parent.mkdir(parents=True)
-    source = Path(request["tokenizer_path"]).resolve(strict=True)
-    shutil.copyfile(source, target)
-    os.environ["OPENPI_DATA_HOME"] = str(cache)
-
-    from openpi import transforms
-    from openpi.models.pi0_config import Pi0Config
-    from openpi.shared import normalize
-    from openpi.training import config, data_loader
-
-    root = Path(request["dataset_root"]).resolve(strict=True)
-    repo_id = "local/pi05-frame-extras-validation"
-    link = Path(os.environ["HF_LEROBOT_HOME"]) / repo_id
-    link.parent.mkdir(parents=True)
-    link.symlink_to(root, target_is_directory=True)
-    dataset = library().LeRobotDataset(repo_id)
-    require(dataset.num_frames >= 2, "one-batch smoke requires at least two frames")
-    for key in ("observation.state", "action"):
-        require(
-            dataset.features[key]["dtype"] == "float32"
-            and list(dataset.features[key]["shape"]) == [17],
-            "PI05 validation requires physical float32[17] storage",
-        )
-    stats = {}
-    for key, column in (("state", "observation.state"), ("actions", "action")):
-        values = np.asarray(dataset.hf_dataset[column], dtype=np.float32)
-        running = normalize.RunningStats()
-        running.update(values)
-        stats[key] = running.get_statistics()
-
-    def prepare_rgb(data):
-        images = {}
-        for key, value in data["image"].items():
-            image = np.asarray(value)
-            if np.issubdtype(image.dtype, np.floating):
-                image = np.rint(image * 255).astype(np.uint8)
-            images[key] = np.transpose(image, (1, 2, 0))
-        images["left_wrist_0_rgb"] = np.zeros_like(images["base_0_rgb"])
-        return {
-            **data,
-            "image": images,
-            "image_mask": {
-                "base_0_rgb": np.True_,
-                "right_wrist_0_rgb": np.True_,
-                "left_wrist_0_rgb": np.False_,
-            },
-        }
-
-    model = Pi0Config(pi05=True)
-    cfg = config.DataConfig(
-        repo_id=repo_id,
-        prompt_from_task=True,
-        action_sequence_keys=("action",),
-        norm_stats=stats,
-        use_quantile_norm=True,
-        repack_transforms=transforms.Group(
-            inputs=[
-                transforms.RepackTransform(
-                    {
-                        "state": "observation.state",
-                        "actions": "action",
-                        "prompt": "prompt",
-                        "image": {
-                            "base_0_rgb": "observation.images.head",
-                            "right_wrist_0_rgb": "observation.images.wrist",
-                        },
-                    }
-                )
-            ]
-        ),
-        data_transforms=transforms.Group(inputs=[prepare_rgb]),
-        model_transforms=config.ModelTransformFactory()(model),
-    )
-    raw = data_loader.create_torch_dataset(cfg, model.action_horizon, model)
-    physical_actions = np.asarray(dataset.hf_dataset["action"], dtype=np.float32)
-    for episode in range(dataset.num_episodes):
-        start = int(dataset.episode_data_index["from"][episode])
-        stop = int(dataset.episode_data_index["to"][episode])
-        for index in sorted({start, stop - 1}):
-            sample = raw[index]
-            expected = physical_actions[
-                np.minimum(np.arange(model.action_horizon) + index, stop - 1)
-            ]
-            require(
-                np.array_equal(sample["action"], expected),
-                "PI05 action horizon crossed an episode boundary",
-            )
-            task = dataset.meta.tasks[int(sample["task_index"])]
-            require(sample["prompt"] == task, "PI05 task prompt changed")
-    loader = data_loader.create_torch_data_loader(
-        cfg,
-        model,
-        action_horizon=model.action_horizon,
-        batch_size=2,
-        num_workers=0,
-        shuffle=False,
-        num_batches=1,
-        framework="jax",
-    )
-    observation, actions = next(iter(loader))
-    state = np.asarray(observation.state)
-    action = np.asarray(actions)
-    tokens = np.asarray(observation.tokenized_prompt)
-    require(state.shape == (2, 32), "PI05 batch state shape")
-    require(action.shape == (2, model.action_horizon, 32), "PI05 batch action shape")
-    require(tokens.shape == (2, model.max_token_len), "PI05 tokenized prompt shape")
-    require(
-        np.asarray(observation.tokenized_prompt_mask).any(axis=1).all(),
-        "PI05 empty tokenized prompt",
-    )
-    require(
-        np.isfinite(state).all() and np.isfinite(action).all(), "PI05 nonfinite batch"
-    )
-    require(
-        np.all(state[:, 17:] == 0) and np.all(action[:, :, 17:] == 0),
-        "PI05 nonzero padded dimensions",
-    )
-    for key, value in observation.images.items():
-        require(tuple(value.shape) == (2, 224, 224, 3), "PI05 image batch shape")
-        require(np.isfinite(np.asarray(value)).all(), "PI05 nonfinite image")
-    require(
-        not np.asarray(observation.image_masks["left_wrist_0_rgb"]).any(),
-        "missing camera must be masked",
-    )
-    return {
-        "pi05_batch": "PASS",
-        "scope": "data pipeline only; no model forward/training/inference",
-        "framework": "OpenPI JAX data loader on CPU",
-        "episode_boundary_checks": "PASS; first/last frame of every episode",
-        "frames": dataset.num_frames,
-        "episodes": dataset.num_episodes,
-        "state_shape": list(state.shape),
-        "action_shape": list(action.shape),
-        "prompt_shape": list(tokens.shape),
-        "image_shapes": {k: list(v.shape) for k, v in observation.images.items()},
-        "normalization": "official RunningStats + quantile Normalize, computed only for this validation",
-        "norm_stats": json.loads(normalize.serialize_json(stats)),
-        "tokenizer_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
-        "openpi_source": str(Path(config.__file__).resolve()),
-        "frame_extras": frame_extras.validate_tables(root),
-    }
-
-
 def main():
     # Fail closed on accidental network calls, in addition to HF offline envs.
     def no_network(*args, **kwargs):
@@ -689,10 +532,7 @@ def main():
         "write": write,
         "validate": validate,
         "openpi": openpi_smoke,
-        "merge_extras": frame_extras.merge_extras,
-        "frame_view": frame_extras.frame_view,
-        "pi05_batch": pi05_batch_smoke,
-        "export_frame_json": json_frames.write_json_frames,
+        "export_frame_json": write_json_frames,
     }[mode](request)
     Path(response_path).write_text(json.dumps(result, indent=2) + "\n")
 

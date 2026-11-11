@@ -207,9 +207,9 @@ def parser() -> argparse.ArgumentParser:
     export.add_argument("--split-seed", type=int, default=0)
     export.add_argument("--dataset-name", default="vla-local")
     export.add_argument(
-        "--frame-extras",
+        "--frame-json-root",
         type=Path,
-        help="optional JSONL depth/success manifest keyed by source episode and tick",
+        help="also export eight-field JSONL and RGB images into this separate new directory",
     )
     export.add_argument(
         "--lerobot-python",
@@ -224,27 +224,6 @@ def parser() -> argparse.ArgumentParser:
         help="reconstruct source plan and validate an existing LeRobot export",
     )
     validate_export.add_argument("--output-root", type=Path, required=True)
-    inspect_frame = commands.add_parser(
-        "inspect-frame", help="join LeRobot and RGB-D/success sidecars for one frame"
-    )
-    inspect_frame.add_argument("--dataset-root", type=Path, required=True)
-    inspect_frame.add_argument("--episode-index", type=int, required=True)
-    inspect_frame.add_argument("--frame-index", type=int, required=True)
-    inspect_frame.add_argument("--lerobot-python", type=Path, required=True)
-    pi05 = commands.add_parser(
-        "validate-pi05",
-        help="offline PI05 normalization, tokenizer and one-batch data validation (no model forward)",
-    )
-    pi05.add_argument("--dataset-root", type=Path, required=True)
-    pi05.add_argument("--tokenizer-path", type=Path, required=True)
-    pi05.add_argument("--lerobot-python", type=Path, required=True)
-    frame_json = commands.add_parser(
-        "export-frame-json",
-        help="export separate per-episode eight-field JSONL files and images",
-    )
-    frame_json.add_argument("--dataset-root", type=Path, required=True)
-    frame_json.add_argument("--output-root", type=Path, required=True)
-    frame_json.add_argument("--lerobot-python", type=Path, required=True)
     validate_export.add_argument(
         "--lerobot-python",
         type=Path,
@@ -318,68 +297,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 validation_fraction=args.validation_fraction,
                 split_seed=args.split_seed,
                 dataset_name=args.dataset_name,
-                frame_extras=args.frame_extras,
+                frame_json_root=args.frame_json_root,
                 lerobot_python=args.lerobot_python,
                 force=args.force,
                 dry_run=args.dry_run,
             )
             print(json.dumps(result, indent=2))
-            return 0
-        if args.command == "export-frame-json":
-            import json
-
-            from vla_data.export.json_frames import export_frame_json
-
-            print(
-                json.dumps(
-                    export_frame_json(
-                        args.dataset_root,
-                        args.output_root,
-                        lerobot_python=args.lerobot_python,
-                    ),
-                    indent=2,
-                )
-            )
-            return 0
-        if args.command == "validate-pi05":
-            import json
-
-            from vla_data.export.runtime import worker_call
-
-            print(
-                json.dumps(
-                    worker_call(
-                        "pi05_batch",
-                        {
-                            "dataset_root": str(args.dataset_root.resolve()),
-                            "tokenizer_path": str(args.tokenizer_path.resolve()),
-                        },
-                        args.lerobot_python,
-                    ),
-                    indent=2,
-                )
-            )
-            return 0
-        if args.command == "inspect-frame":
-            import json
-
-            from vla_data.export.runtime import worker_call
-
-            print(
-                json.dumps(
-                    worker_call(
-                        "frame_view",
-                        {
-                            "dataset_root": str(args.dataset_root.resolve()),
-                            "episode_index": args.episode_index,
-                            "frame_index": args.frame_index,
-                        },
-                        args.lerobot_python,
-                    ),
-                    indent=2,
-                    ensure_ascii=False,
-                )
-            )
             return 0
         if args.command == "validate-lerobot":
             import json
