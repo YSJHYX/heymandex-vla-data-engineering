@@ -83,6 +83,9 @@ lerobot/
 
 ## 5. 快速开始
 
+需要同时输出标准 LeRobot 和八字段 JSONL/图片时，在 `export-lerobot` 上增加
+`--frame-json-root /path/to/frame-json`；详见 [JSONL 导出](docs/frame_json.md)。
+
 1. 按下一节设置路径和现有解释器。
 2. Step 1 运行 D2；Step 2 运行 D3。
 3. Step 3 导出 LeRobot；Step 4 做本地独立验证。
