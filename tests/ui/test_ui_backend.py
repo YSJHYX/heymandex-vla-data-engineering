@@ -460,3 +460,50 @@ def test_episode_diagnostics_and_comparison_routes(
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+@pytest.mark.parametrize("enabled", [None, False, True])
+def test_frame_json_job_is_opt_in_local_and_unique(config, monkeypatch, enabled):
+    runner = _ready_runner(config, monkeypatch)
+    seen = []
+    done = threading.Event()
+
+    def execute(job_id, request, _export):
+        seen.append(request)
+        runner._update(job_id, status="PASS", summary="{}")
+        done.set()
+
+    monkeypatch.setattr(runner, "_execute", execute)
+    params = {} if enabled is None else {"frame_json": enabled}
+    for _ in range(2):
+        done.clear()
+        job = runner.submit("sample", "export", params)
+        assert done.wait(5)
+        if enabled:
+            destination = config.run("sample").work_root / "frame-json" / job["job_id"]
+            assert seen[-1]["frame_json_root"] == str(destination)
+            assert job["context"]["frame_json_root"] == str(destination)
+            assert not destination.exists()
+            assert not destination.is_relative_to(config.run("sample").export_root)
+        else:
+            assert "frame_json_root" not in seen[-1]
+            assert "frame_json_root" not in job["context"]
+    if enabled:
+        assert seen[0]["frame_json_root"] != seen[1]["frame_json_root"]
+
+
+def test_frame_json_rejects_wrong_types_stage_and_path_escape(
+    config, monkeypatch, tmp_path
+):
+    runner = _ready_runner(config, monkeypatch)
+    for invalid in ("false", "true", 0, 1, None):
+        with pytest.raises(TypeError, match="布尔值"):
+            runner.submit("sample", "export", {"frame_json": invalid})
+    with pytest.raises(ValueError, match="仅可"):
+        runner.submit("sample", "clean", {"frame_json": True})
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    config.run("sample").frame_json_root.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ValueError, match="超出允许范围"):
+        runner.submit("sample", "export", {"frame_json": True})
+    assert not list(outside.iterdir())

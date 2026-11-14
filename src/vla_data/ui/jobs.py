@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from vla_data.publish.local import build_canonical_manifest, validate_repo_id
-from vla_data.ui.config import DATASET_NAME, UIConfig
+from vla_data.ui.config import DATASET_NAME, UIConfig, inside
 
 STAGES = {
     "clean",
@@ -172,6 +172,11 @@ class PipelineJobRunner:
         dataset_name = str(params.get("dataset_name", f"rm65_sg100_{run_name}"))
         if stage == "export" and not DATASET_NAME.fullmatch(dataset_name):
             raise ValueError("数据集名称只允许字母、数字、下划线、短横线和点")
+        frame_json = params.get("frame_json", False)
+        if not isinstance(frame_json, bool):
+            raise TypeError("frame JSON 选项必须为布尔值")
+        if frame_json and stage != "export":
+            raise ValueError("frame JSON 仅可在 LeRobot 导出阶段生成")
         fraction = params.get("validation_fraction", 0.0)
         seed = params.get("split_seed", 17)
         if (
@@ -228,6 +233,13 @@ class PipelineJobRunner:
             baseline_sha = evidence.get("remote_before", {}).get("sha")
             if not baseline_sha:
                 raise ValueError("Dry Run 缺少远端 baseline SHA")
+        job_id = uuid.uuid4().hex
+        frame_json_root = None
+        if frame_json:
+            destination = paths.frame_json_root / job_id
+            if not inside(destination, self.config.allowed_data_roots):
+                raise ValueError("frame JSON 输出路径超出允许范围")
+            frame_json_root = str(destination)
         request = {
             "stage": stage,
             "paths": {
@@ -247,7 +259,9 @@ class PipelineJobRunner:
             "baseline_sha": baseline_sha,
         }
         context = {"fingerprints": fingerprint, "repo_id": repo_id}
-        job_id = uuid.uuid4().hex
+        if frame_json_root is not None:
+            request["frame_json_root"] = frame_json_root
+            context["frame_json_root"] = frame_json_root
         log_path = self.logs_dir / f"{job_id}.log"
         with self._lock:
             with self._connection() as db:

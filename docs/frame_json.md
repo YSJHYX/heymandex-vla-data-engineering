@@ -1,5 +1,10 @@
 # 同时导出 LeRobot 与八字段 JSONL
 
+本地 UI：在“03 / LeRobot 导出”卡片勾选“同时导出 frame JSON”（默认关闭），
+然后生成或重新导出 LeRobot。输出保存于当前批次 `work/frame-json/<任务编号>/`，
+卡片与任务日志会显示实际路径。JSONL 和 PNG 仅保存在 UI 服务所在机器，不上传 HF；
+每次勾选导出使用独立目录，不覆盖旧文件。
+
 在原有 `export-lerobot` 命令上增加一个可选输出目录：
 
 ```bash

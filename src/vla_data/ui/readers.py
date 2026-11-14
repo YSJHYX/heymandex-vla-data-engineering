@@ -151,6 +151,7 @@ def run_snapshot(paths: RunPaths) -> dict:
             "curated": str(paths.curated_root),
             "quality": str(paths.quality_root),
             "export": str(paths.export_root),
+            "frame_json": str(paths.frame_json_root),
         },
         "raw": raw,
         "d2": {

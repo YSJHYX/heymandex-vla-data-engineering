@@ -65,6 +65,15 @@ def execute(request: dict) -> dict:
         return {"d2": d2_summary if stage == "clean" else None, "d3": d3_summary}
     if stage == "export":
         emit("log", {"message": "开始 LeRobot v2.1 导出"})
+        frame_json_root = request.get("frame_json_root")
+        if frame_json_root:
+            emit(
+                "log",
+                {
+                    "message": "LeRobot 导出并验证后将生成 frame JSONL 与两路 PNG；"
+                    f"仅保存在本地，不上传 HF：{frame_json_root}"
+                },
+            )
         result = export_lerobot(
             None,
             export,
@@ -74,8 +83,16 @@ def execute(request: dict) -> dict:
             validation_fraction=request["validation_fraction"],
             split_seed=request["split_seed"],
             lerobot_python=request["lerobot_python"],
+            frame_json_root=frame_json_root,
             force=request.get("force", False),
         )
+        if result.get("frame_json"):
+            emit(
+                "log",
+                {
+                    "message": f"frame JSON 本地导出完成：{result['frame_json']['output_root']}"
+                },
+            )
         return {"export": result}
     if stage == "validate":
         emit("log", {"message": "开始本地独立验证和官方 LeRobot 回读"})

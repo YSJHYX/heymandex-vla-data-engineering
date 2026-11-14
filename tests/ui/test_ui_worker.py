@@ -93,3 +93,57 @@ def test_validation_failure_is_hard_failure(
     )
     with pytest.raises(RuntimeError, match="bad wrist"):
         worker.execute(worker_request)
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_export_passes_optional_frame_json_to_exporter(
+    worker_request, monkeypatch, enabled
+):
+    worker_request.update(
+        stage="export", dataset_name="test", validation_fraction=0.0, split_seed=17
+    )
+    destination = str(
+        Path(worker_request["paths"]["export"]).parent / "frame-json" / "job"
+    )
+    if enabled:
+        worker_request["frame_json_root"] = destination
+    seen = {}
+
+    def export(_manifest, root, **kwargs):
+        seen.update(root=root, **kwargs)
+        return {
+            "status": "BUILT",
+            **(
+                {"frame_json": {"output_root": destination, "splits": {}}}
+                if enabled
+                else {}
+            ),
+        }
+
+    monkeypatch.setattr(worker, "export_lerobot", export)
+    monkeypatch.setattr(
+        worker,
+        "publish_dataset",
+        lambda *_args, **_kwargs: pytest.fail("local export must not publish"),
+    )
+    result = worker.execute(worker_request)
+    assert seen["root"] == Path(worker_request["paths"]["export"])
+    assert seen["frame_json_root"] == (destination if enabled else None)
+    assert ("frame_json" in result["export"]) == enabled
+
+
+def test_frame_json_failure_is_not_reported_as_success(worker_request, monkeypatch):
+    worker_request.update(
+        stage="export",
+        dataset_name="test",
+        validation_fraction=0.0,
+        split_seed=17,
+        frame_json_root="/local/frame-json/job",
+    )
+
+    def fail(*_args, **_kwargs):
+        raise ValueError("JSON source video is shorter than episode")
+
+    monkeypatch.setattr(worker, "export_lerobot", fail)
+    with pytest.raises(ValueError, match="shorter"):
+        worker.execute(worker_request)

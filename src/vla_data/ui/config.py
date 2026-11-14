@@ -41,6 +41,10 @@ class RunPaths:
     episode_ids: tuple[str, ...] = ()
     read_only: bool = False
 
+    @property
+    def frame_json_root(self) -> Path:
+        return self.work_root / "frame-json"
+
 
 @dataclass(frozen=True)
 class UIConfig:
