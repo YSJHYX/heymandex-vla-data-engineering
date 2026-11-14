@@ -122,7 +122,7 @@ def write_json_frames(request):
                     row[name] = None
                 row["joint_pos"] = native_row["observation.state"]
                 row["action"] = native_row["action"]
-                row["success"] = None
+                row["success"] = int(frame == count - 1)
                 for key in ("joint_pos", "action"):
                     if len(row[key]) != 17 or not np.isfinite(row[key]).all():
                         raise ValueError("JSON requires finite 17-dimensional vectors")
