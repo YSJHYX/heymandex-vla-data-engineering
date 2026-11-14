@@ -207,6 +207,11 @@ def parser() -> argparse.ArgumentParser:
     export.add_argument("--split-seed", type=int, default=0)
     export.add_argument("--dataset-name", default="vla-local")
     export.add_argument(
+        "--frame-json-root",
+        type=Path,
+        help="also export eight-field JSONL and RGB images into this separate new directory",
+    )
+    export.add_argument(
         "--lerobot-python",
         type=Path,
         help="existing interpreter with audited LeRobot v2.1; never installs packages",
@@ -292,6 +297,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 validation_fraction=args.validation_fraction,
                 split_seed=args.split_seed,
                 dataset_name=args.dataset_name,
+                frame_json_root=args.frame_json_root,
                 lerobot_python=args.lerobot_python,
                 force=args.force,
                 dry_run=args.dry_run,

@@ -16,6 +16,11 @@ import numpy as np
 from PIL import Image
 
 try:
+    from .json_frames import write_json_frames
+except ImportError:  # Standalone execution in the existing LeRobot environment.
+    from json_frames import write_json_frames
+
+try:
     from .bookkeeping_stats import BOOKKEEPING, validate_bookkeeping_stats
     from .camera_transform import (
         CAMERA_EXPORT_TRANSFORMS,
@@ -134,7 +139,10 @@ def write(request):
                     }
 
                     # RAW v4 is already SDK-user-domain; convert legacy once.
-                    if run.get("action_hand_domain", "canonical_rad") == "canonical_rad":
+                    if (
+                        run.get("action_hand_domain", "canonical_rad")
+                        == "canonical_rad"
+                    ):
                         frame["action"][[9, 12, 14]] *= -1.0
                     for key in ("observation.state", "action"):
                         require(
@@ -352,9 +360,11 @@ def validate(request):
                     expected = archive[source][
                         run["source_curated_start"] : run["source_curated_end"] + 1
                     ].astype(np.float32)
-                    if key == "action" and run.get(
-                        "action_hand_domain", "canonical_rad"
-                    ) == "canonical_rad":
+                    if (
+                        key == "action"
+                        and run.get("action_hand_domain", "canonical_rad")
+                        == "canonical_rad"
+                    ):
                         expected[:, [9, 12, 14]] *= -1.0
                     values = torch.stack(table[key]).numpy()
                     require(
@@ -522,6 +532,7 @@ def main():
         "write": write,
         "validate": validate,
         "openpi": openpi_smoke,
+        "export_frame_json": write_json_frames,
     }[mode](request)
     Path(response_path).write_text(json.dumps(result, indent=2) + "\n")
 
