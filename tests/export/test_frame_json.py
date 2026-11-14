@@ -121,6 +121,8 @@ def test_one_command_lerobot_and_eight_field_json_roundtrip(
                 for line in (directory / "frames.jsonl").read_text().splitlines()
             ]
             assert len(rows) == count and rows[0]["t"] == 0
+            assert [row["success"] for row in rows] == [0] * (count - 1) + [1]
+            assert all(type(row["success"]) is int for row in rows)
             parquet = next(
                 (native / split / "data").rglob(f"episode_{episode:06d}.parquet")
             )
@@ -141,11 +143,7 @@ def test_one_command_lerobot_and_eight_field_json_roundtrip(
                 assert row["joint_pos"] == original["observation.state"]
                 assert row["action"] == original["action"]
                 assert row["t"] == original["timestamp"]
-                assert (
-                    row["depth_top"] is None
-                    and row["depth_hand"] is None
-                    and row["success"] is None
-                )
+                assert row["depth_top"] is None and row["depth_hand"] is None
                 for camera in ("image_top", "image_hand"):
                     with Image.open(directory / row[camera]) as image:
                         assert image.size == (128, 96)

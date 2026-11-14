@@ -35,9 +35,11 @@ output/
 | `image_top` / `image_hand` | 相对于 JSONL 的 PNG 路径；图片由标准 MP4 解码，腕部方向沿用视频 |
 | `joint_pos` | 标准 Parquet 的 `observation.state`，原始 17 维实测值 |
 | `action` | 标准 Parquet 的 `action`，原始 17 维实际生效命令 |
-| `depth_top` / `depth_hand` / `success` | 当前原有 LeRobot 合同不含这些数据，本版本固定写 `null` |
+| `depth_top` / `depth_hand` | 当前原有 LeRobot 合同不含深度数据，固定写 `null` |
+| `success` | 整数类型，每个导出 episode 的最后一帧为 `1`，其余帧为 `0`；单帧 episode 为 `1` |
 
-没有新增深度/成功标注导入或中间 Parquet；不会按 episode 末帧自动猜测成功。
+`success` 是按导出 episode 边界生成的约定标记，不是从 RAW 导入的任务成功标注。
+没有新增深度/成功标注导入或中间 Parquet。
 JSONL 读取已经验证过的 LeRobot 结果，仅检查帧数、索引、向量和图片输出等基本正确性。
 原有 D2/D3、LeRobot 数据校验和 HF 累计发布流程保持原样。
 
