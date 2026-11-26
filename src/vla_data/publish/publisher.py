@@ -6,10 +6,11 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import time
-from collections.abc import Collection
+from collections.abc import Callable, Collection
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -27,6 +28,7 @@ from vla_data.publish.remote import HFWorkerError, hf_call
 
 STATUS_UPLOADED = "UPLOADED"
 STATUS_DRY_RUN = "DRY_RUN"
+STATUS_VERIFICATION_PENDING = "UPLOADED_VERIFICATION_PENDING"
 FULL_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -77,9 +79,10 @@ def publish_dataset(
     force: bool = False,
     verification_cache_dir: str | Path | None = None,
     baseline_cache_dir: str | Path | None = None,
-    verification_mode: str = "auto",
+    verification_mode: str = "listing",
     full_audit_every_n: int = 5,
     legacy_camera_baseline_revisions: Collection[str] | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> dict:
     """Publish a complete, locally rebuilt cumulative LeRobot revision."""
 
@@ -206,6 +209,11 @@ def publish_dataset(
         (rebuilt / "README.md").write_text(
             build_readme(merged_layout["tasks"], merged_layout["fps"])
         )
+        mode = _resolve_verification_mode(
+            repo_id, persistent_baseline_cache, verification_mode, full_audit_every_n
+        )
+        if progress:
+            progress("开始上传；上传后将保留固定 commit 的独立验收记录")
         commit = hf_call(
             "upload",
             {
@@ -216,43 +224,129 @@ def publish_dataset(
             },
             hf_python,
         )
-        mode = _resolve_verification_mode(
-            repo_id,
-            persistent_baseline_cache,
-            verification_mode,
-            full_audit_every_n,
-        )
-        if mode == "full":
-            remote_check = validate_remote(
-                rebuilt,
-                repo_id,
-                revision=commit["commit_sha"],
-                hf_python=hf_python,
-                lerobot_python=lerobot_python,
-                cache_dir=verification_cache_dir or work / "verification_cache",
-            )
-            _advance_verification_counter(persistent_baseline_cache)
-        else:
-            remote_check = validate_remote_listing(
-                rebuilt,
-                repo_id,
-                revision=commit["commit_sha"],
-                hf_python=hf_python,
-            )
-            _advance_verification_counter(persistent_baseline_cache)
-        return {
+        revision = commit["commit_sha"]
+        if not FULL_SHA_PATTERN.fullmatch(revision):
+            raise RemoteValidationError("upload returned an invalid commit SHA")
+        receipt_dir = persistent_baseline_cache / "publications" / revision
+        receipt_dir.mkdir(parents=True, exist_ok=True)
+        receipt = receipt_dir / "publication.json"
+        result = {
             **evidence,
-            "action": STATUS_UPLOADED,
+            "action": STATUS_VERIFICATION_PENDING,
             "would_action": STATUS_UPLOADED,
             "commit_sha": commit["commit_sha"],
             "commit_url": commit["commit_url"],
             "codebase_tag": commit["codebase_tag"],
             "merged_validation": merged,
-            "remote_validation": remote_check,
+            "remote_validation": {"status": "PENDING", "mode": mode},
             "uploaded_file_count": merged_manifest["file_count"] + 1,
             "uploaded_bytes": merged_manifest["total_bytes"],
             "wall_time_s": time.monotonic() - started,
+            "expected_fingerprint": merged_manifest["fingerprint"],
+            "verification_cache_dir": str(
+                Path(verification_cache_dir).absolute()
+                if verification_cache_dir is not None
+                else receipt_dir / "download"
+            ),
         }
+        # Persist commit before moving the reference or starting network checks.
+        _write_publication(receipt, result)
+        try:
+            shutil.move(str(rebuilt), str(receipt_dir / "expected"))
+        except OSError:
+            result["verification_error"] = (
+                "LocalReferenceError: unable to retain verification reference"
+            )
+            _write_publication(receipt, result)
+            return result
+        if progress:
+            progress(f"上传成功：{revision}；开始 {mode} 验收，可中断后单独重试")
+        return retry_verification(
+            repo_id,
+            revision,
+            hf_python=hf_python,
+            lerobot_python=lerobot_python,
+            baseline_cache_dir=baseline_cache_dir,
+            progress=progress,
+        )
+
+
+def _write_publication(path: Path, value: dict) -> None:
+    """Atomically retain commit evidence even when validation is interrupted."""
+    with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as file:
+        json.dump(value, file, sort_keys=True)
+        name = file.name
+    os.replace(name, path)
+
+
+def retry_verification(
+    repo_id: str,
+    revision: str,
+    *,
+    hf_python: str | None,
+    lerobot_python: str,
+    baseline_cache_dir: str | Path | None = None,
+    progress: Callable[[str], None] | None = None,
+) -> dict:
+    """Resume a recorded publication's verification; never upload or move tags."""
+    validate_repo_id(repo_id)
+    if not FULL_SHA_PATTERN.fullmatch(revision):
+        raise RemoteValidationError("verification retry requires a full commit SHA")
+    cache = _baseline_cache_path(repo_id, baseline_cache_dir)
+    receipt_dir = cache / "publications" / revision
+    receipt = receipt_dir / "publication.json"
+    result = json.loads(receipt.read_text())
+    if result.get("repo_id") != repo_id or result.get("commit_sha") != revision:
+        raise RemoteValidationError("publication receipt does not match repo/revision")
+    if result["action"] == STATUS_UPLOADED:
+        return result
+    expected = receipt_dir / "expected"
+    try:
+        if (
+            build_canonical_manifest(expected)["fingerprint"]
+            != result["expected_fingerprint"]
+        ):
+            raise RemoteValidationError("retained publication reference has changed")
+        mode = result["remote_validation"]["mode"]
+        if progress:
+            progress(f"固定 commit {revision}：{mode} 验收，复用独立验收缓存")
+        if mode == "full":
+            remote_check = validate_remote(
+                expected,
+                repo_id,
+                revision=revision,
+                hf_python=hf_python,
+                lerobot_python=lerobot_python,
+                cache_dir=result["verification_cache_dir"],
+                resume=True,
+            )
+        elif mode == "listing":
+            remote_check = validate_remote_listing(
+                expected, repo_id, revision=revision, hf_python=hf_python
+            )
+        else:
+            raise RemoteValidationError("unknown recorded verification mode")
+        _advance_verification_counter(cache, revision)
+    except Exception as exc:  # noqa: BLE001 - preserve submitted commit on any audit failure
+        # Do not persist raw network errors, which can carry signed URLs.
+        detail = (
+            exc.message
+            if isinstance(exc, HFWorkerError) and exc.error_type == "HFWorkerTimeout"
+            else "verification did not complete; retained commit requires retry"
+        )
+        result["verification_error"] = f"{type(exc).__name__}: {detail}"
+        _write_publication(receipt, result)
+        if progress:
+            progress(f"已上传、验收未完成：{revision}；可点击重试验收，不会重新上传")
+        return result
+    result.update(action=STATUS_UPLOADED, remote_validation=remote_check)
+    result.pop("verification_error", None)
+    _write_publication(receipt, result)
+    # The download cache survives for later audits; only the local reference goes.
+    shutil.rmtree(expected, ignore_errors=True)
+    if progress:
+        progress(f"固定 commit {revision} 验收通过")
+    return result
 
 
 def validate_remote(
@@ -263,6 +357,7 @@ def validate_remote(
     hf_python: str | None,
     lerobot_python: str,
     cache_dir: str | Path,
+    resume: bool = False,
 ) -> dict:
     """Clean-cache download, SHA-256 equality, and official LeRobot reload."""
 
@@ -274,10 +369,27 @@ def validate_remote(
         )
     manifest = build_canonical_manifest(dataset_root)
     cache = Path(cache_dir)
-    if cache.exists() and (not cache.is_dir() or any(cache.iterdir())):
+    if cache.exists() and (not cache.is_dir() or (not resume and any(cache.iterdir()))):
         raise RemoteValidationError(
             "fresh download requires an absent or empty cache directory"
         )
+    if resume:
+        marker = cache / ".vla_verification.json"
+        identity = {
+            "repo_id": repo_id,
+            "revision": revision,
+            "fingerprint": manifest["fingerprint"],
+        }
+        if marker.is_file():
+            if json.loads(marker.read_text()) != identity:
+                raise RemoteValidationError(
+                    "verification cache belongs to another payload"
+                )
+        else:
+            if cache.exists() and any(cache.iterdir()):
+                raise RemoteValidationError("unowned verification cache is not empty")
+            cache.mkdir(parents=True, exist_ok=True)
+            _write_publication(marker, identity)
     downloaded = hf_call(
         "download",
         {"repo_id": repo_id, "revision": revision, "cache_dir": str(cache_dir)},
@@ -378,15 +490,28 @@ def _resolve_verification_mode(
     return "full" if count == 0 or count % full_audit_every_n == 0 else "listing"
 
 
-def _advance_verification_counter(baseline_cache: Path) -> None:
+def _advance_verification_counter(
+    baseline_cache: Path, revision: str | None = None
+) -> None:
     counter_path = baseline_cache / _VERIFICATION_COUNTER
     try:
-        count = int(json.loads(counter_path.read_text())["successful_publishes"])
+        counter = json.loads(counter_path.read_text())
+        count = int(counter["successful_publishes"])
     except (OSError, ValueError, KeyError, TypeError):
         count = 0
+        counter = {}
+    verified = counter.get("verified_revisions", [])
+    if revision is not None and revision in verified:
+        return
+    if revision is not None:
+        verified.append(revision)
     counter_path.parent.mkdir(parents=True, exist_ok=True)
-    counter_path.write_text(
-        json.dumps({"successful_publishes": count + 1}, sort_keys=True)
+    _write_publication(
+        counter_path,
+        {
+            "successful_publishes": count + 1,
+            "verified_revisions": verified,
+        },
     )
 
 
@@ -469,6 +594,20 @@ def validate_remote_listing(
             raise RemoteValidationError(
                 f"small-file mismatches: {json.dumps(small_checked['mismatches'][:5])}"
             )
+    summary = hf_call(
+        "dataset_summary", {"repo_id": repo_id, "revision": revision}, hf_python
+    )
+    layout = validate_dataset_root(dataset_root)
+    expected_counts = {
+        "total_episodes": len(layout["provenance"]),
+        "total_frames": sum(row["transition_count"] for row in layout["provenance"]),
+        "total_videos": 2 * len(layout["provenance"]),
+    }
+    if summary.get("resolved_sha") != revision or any(
+        type(summary.get(key)) is not int or summary[key] != value
+        for key, value in expected_counts.items()
+    ):
+        raise RemoteValidationError("HF dataset summary differs from uploaded dataset")
     return {
         "schema_name": "vla_hf_remote_validation",
         "schema_version": 2,
@@ -479,6 +618,7 @@ def validate_remote_listing(
         "private": state.get("private"),
         "lfs_files_verified": len(manifest["files"]) - len(small_files),
         "small_files_verified": small_checked.get("checked", 0),
+        "remote_summary": summary,
         "canonical_file_mismatches": 0,
         "canonical_file_count": manifest["file_count"],
         "local_fingerprint": manifest["fingerprint"],

@@ -54,6 +54,7 @@ class FakeHub:
         self.upload_payloads: list[dict] = []
         self.download_revisions: list[str] = []
         self.uploaded_listing: list[dict] | None = None
+        self.commit_sha = REVISION
 
     def __call__(self, mode: str, payload: dict, hf_python=None) -> dict:
         self.calls.append(mode)
@@ -88,12 +89,19 @@ class FakeHub:
             ]
             self.uploads.append(payload["staging_dir"])
             return {
-                "commit_sha": "deadbeef" * 5,
+                "commit_sha": self.commit_sha,
                 "commit_url": f"https://huggingface.co/datasets/{REPO}/tree/abc",
                 "codebase_tag": "v2.1",
             }
         if mode == "verify_files":
             return {"mismatches": [], "checked": len(payload["files"])}
+        if mode == "dataset_summary":
+            return {
+                "resolved_sha": payload["revision"],
+                "total_episodes": 1,
+                "total_frames": 3,
+                "total_videos": 2,
+            }
         if mode == "download":
             self.download_revisions.append(payload["revision"])
             return {
@@ -712,7 +720,10 @@ def test_publish_auto_mode_promotes_to_listing_after_first_full_audit(
     monkeypatch.setattr(publisher_module, "hf_call", hub)
     _mock_upload_merge(monkeypatch)
     first = publish_dataset(
-        hf_dataset_root, REPO, baseline_cache_dir=tmp_path / "cache"
+        hf_dataset_root,
+        REPO,
+        baseline_cache_dir=tmp_path / "cache",
+        verification_mode="auto",
     )
     assert first["action"] == "UPLOADED"
     counter = _json.loads(
@@ -724,8 +735,12 @@ def test_publish_auto_mode_promotes_to_listing_after_first_full_audit(
     # The second publish no longer runs the mocked full download audit; it
     # switches to the zero-download listing verification against the uploaded
     # tree recorded by FakeHub.
+    hub.commit_sha = "b" * 40
     second = publish_dataset(
-        hf_dataset_root, REPO, baseline_cache_dir=tmp_path / "cache"
+        hf_dataset_root,
+        REPO,
+        baseline_cache_dir=tmp_path / "cache",
+        verification_mode="auto",
     )
     assert second["action"] == "UPLOADED"
     assert second["remote_validation"]["mode"] == "listing"

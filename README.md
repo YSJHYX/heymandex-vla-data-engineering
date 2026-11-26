@@ -223,7 +223,7 @@ uv run --no-sync vla-data publish-hf \
 
 ⚠️ **该操作会修改 HF 远端仓库。** 仅在 Step 5 dry-run 成功、检查计划并获得本次远端写入授权后执行。
 
-用途：以当前有效 HEAD 为 baseline，按 logical episode 累计新 run，完整重建 LeRobot 数据集并发布新 revision；上传后自动做固定 SHA 的 fresh download、hash 比对和官方 reload。
+用途：以当前有效 HEAD 为 baseline，按 logical episode 累计新 run，完整重建 LeRobot 数据集并发布新 revision；上传后默认按固定 SHA 核对 HF 文件列表、大小、LFS SHA-256 和小型元数据字节哈希；episode/帧数直接读取 HF `meta/info.json` 并与本次合并结果比对，不全量回下载视频与 Parquet。上传前仍执行本地官方 LeRobot 回读。累计合并需要的 baseline 下载继续使用已有增量缓存。
 
 输入：`$EXPORT_ROOT/train`、`$HF_REPO`。输出：新 commit SHA 与远端验证证据；原始 RAW、本地 incoming 导出和旧 HF revision 均不改写。
 
@@ -243,7 +243,7 @@ uv run --no-sync vla-data publish-hf \
 
 ## 13. Step 7 — Pinned Remote Verification
 
-用途：对精确 HF commit 做可见性记录、文件 hash、LeRobot 结构和来源追踪验收。Step 6 已自动执行一次；以下命令只用于**额外的独立复核**。
+用途：对精确 HF commit 做可见性记录、文件 hash、LeRobot 结构和来源追踪验收。Step 6 默认执行文件哈希和元数据验收；以下全量下载命令只用于**额外的独立复核**。
 
 输入：精确 `HF_REVISION`，以及与该 revision 上传前字节一致的**完整 merged dataset 本地副本**。输出：只读验收证据。
 
@@ -265,7 +265,7 @@ uv run --no-sync vla-data publish-hf \
   --cache-dir "$VERIFY_CACHE"
 ```
 
-`REPLACE_WITH_RETAINED_MERGED_ROOT` 是本次发布实际使用、经过验证的完整 merged dataset，不是当天 incoming standalone dataset。当前 CLI **不会输出或持久保留**临时 merged staging 路径；若未另行保留字节一致的副本，就不要照抄这条独立复核命令，也不要用 incoming root 顶替。即使远端此前为空，发布器仍会完整重建，视频字节也可能变化。常规发布以 Step 6 自动执行并打印的 pinned 远端验收为准。
+`REPLACE_WITH_RETAINED_MERGED_ROOT` 是本次发布实际使用、经过验证的完整 merged dataset，不是当天 incoming standalone dataset。发布器会为未完成的验收保留完整 merged 对照数据；验收成功后自动清理对照数据。若未另行保留字节一致的副本，就不要照抄这条独立复核命令，也不要用 incoming root 顶替。即使远端此前为空，发布器仍会完整重建，视频字节也可能变化。常规发布以 Step 6 自动执行并打印的 pinned 远端验收为准。
 
 成功标准：
 
@@ -352,6 +352,16 @@ uv run --no-sync pytest -q
 3. 检查 Episode 表；失败项可点击「查看 D2 诊断」，分别核对原始 D2 rejection evidence 与只读 RAW-derived root cause。Rejection Groups 可能重叠，RAW 诊断不会替换 D2 reason，也不能作为降低清洗门槛的依据。确认后再点击「生成 LeRobot 数据集」。默认验证集比例为 `0.1`、数据划分随机种子为 `17`；小批次不保证产生 val split。
 4. 点击「验证 LeRobot 数据集」。未通过时 HF 阶段被阻断。
 5. 在 Hugging Face 页确认目标 repo、可见性和账户，点击「检查 HF 上传计划」。这是只读 Dry Run，核对重复数、新增数、期望总数和 baseline SHA。`NO_NEW_EPISODES` 表示无需重复上传，上传按钮不可用。
-6. 仅在确有新增 episode 时，点击「上传到 Hugging Face」，核对二次确认弹窗并勾选确认。随后等待固定 commit SHA 的 fresh download、hash 比对和官方 LeRobot 回读均通过；若远端验收失败，不能视作发布成功。
+6. 仅在确有新增 episode 时，点击「上传到 Hugging Face」，核对二次确认弹窗并勾选确认。随后等待固定 commit SHA 的 HF 文件哈希与元数据验收通过，无需全量回下载。若出现“已上传 · 验收待完成”，可点击“重试验收”，只复核已记录的 commit，不会再次上传。
 
 UI 不提供修改 RAW、task、provenance、HF 删除/覆盖、OpenPI 训练或机器人控制。页面请求只允许固定的 pipeline 动作，服务端校验路径与参数，且全局一次只执行一个 job。日志做 token/secret 基础脱敏；出错时保留报告与 job 日志供数据工程人员排查。UI metadata 位于配置的 `state_dir`，不写入 RAW。
+
+### 上传后的验收与重试
+
+默认 `--verification-mode listing` 不下载视频或 Parquet，仅读取固定 commit 的 HF 文件列表、LFS 哈希及少量元数据，核对文件大小、SHA-256、episode/帧数。只有验收通过才计入成功次数。可用 `--verification-mode full` 主动启用全量下载和官方 LeRobot 回读；`auto` 为原周期审计策略，仅显式选择时启用。
+
+上传成功后立即记录 commit 和验收状态，保存在 `$VLA_HF_BASELINE_CACHE_ROOT/<owner>__<repo>/publications/<SHA>/publication.json`，默认根目录为 `~/.cache/vla_hf_baseline_cache`。中断或校验失败不会被当作验收成功；CLI 返回码为 3，UI 显示验收待完成。
+
+使用原来的 `--repo-id`、`--dataset-root`、`--hf-python`、`--lerobot-python` 参数，加 `--retry-verification <SHA>`，即可只重试该已记录 commit 的验收。该操作不上传数据，也不移动标签。旧版失败任务没有此记录，不能直接使用新重试按钮；历史提交需另行独立核验。
+
+可选全量审计的下载默认上限为 43200 秒（12 小时），可用 `VLA_HF_DOWNLOAD_TIMEOUT_SECONDS` 调整。独立缓存绑定仓库、固定 SHA 与预期内容指纹，中断后续传，但每次仍检查下载结果的字节哈希和官方回读。首次审计使用独立空缓存，保留缓存不等于跳过校验。

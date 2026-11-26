@@ -301,7 +301,7 @@ class UIHandler(BaseHTTPRequestHandler):
                 params = payload.get("params", {})
                 if not isinstance(params, dict):
                     raise ValueError("params 必须是对象")
-                if stage in {"hf-dry-run", "hf-publish"}:
+                if stage in {"hf-dry-run", "hf-publish", "hf-verify"}:
                     repo_id = params.get("repo_id")
                     try:
                         validate_repo_id(repo_id if isinstance(repo_id, str) else "")

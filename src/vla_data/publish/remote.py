@@ -47,8 +47,7 @@ def _loopback_proxy_endpoint(value: str) -> tuple[str, int] | None:
     try:
         addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
         if addresses and all(
-            info[4][0].startswith("127.") or info[4][0] == "::1"
-            for info in addresses
+            info[4][0].startswith("127.") or info[4][0] == "::1" for info in addresses
         ):
             return host, port
     except socket.gaierror:
@@ -83,15 +82,27 @@ def hf_call(mode: str, payload: dict, hf_python: str | None = None) -> dict:
 
     interpreter = hf_python or sys.executable
     request = json.dumps({"mode": mode, **payload})
-    completed = subprocess.run(
-        [interpreter, str(WORKER_SOURCE)],
-        input=request,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=7200,
-        env=_worker_environment(),
-    )
+    timeout = 7200
+    if mode == "download":
+        timeout = int(os.environ.get("VLA_HF_DOWNLOAD_TIMEOUT_SECONDS", "43200"))
+        if timeout <= 0:
+            raise ValueError("VLA_HF_DOWNLOAD_TIMEOUT_SECONDS must be positive")
+    try:
+        completed = subprocess.run(
+            [interpreter, str(WORKER_SOURCE)],
+            input=request,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
+            env=_worker_environment(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        # Never forward captured output: Hub stderr can contain signed URLs.
+        raise HFWorkerError(
+            "HFWorkerTimeout",
+            f"HF {mode} exceeded {timeout} seconds; download cache retained for retry",
+        ) from exc
     if completed.returncode != 0 or not completed.stdout.strip():
         raise HFWorkerError(
             "HFWorkerFailed",

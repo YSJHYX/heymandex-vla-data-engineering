@@ -206,6 +206,53 @@ def test_shell_false_and_job_persistence(
     assert PipelineJobRunner(config).get(submitted["job_id"])["status"] == "PASS"
 
 
+def test_pending_publication_is_warning_and_retry_is_bound_to_record(
+    config, monkeypatch
+):
+    runner = _ready_runner(config, monkeypatch)
+    publication = {
+        "action": "UPLOADED_VERIFICATION_PENDING",
+        "repo_id": config.default_hf_repo,
+        "commit_sha": "b" * 40,
+    }
+    source_id = _seed(runner, "hf-publish", "WARNING", {"publish": publication})
+
+    class FakePopen:
+        def __init__(self, argv, **kwargs):
+            self.stdin = io.StringIO()
+            self.stdout = io.StringIO(
+                "UI_EVENT "
+                + json.dumps(
+                    {
+                        "kind": "result",
+                        "ok": True,
+                        "summary": {"publish": publication},
+                    }
+                )
+                + "\n"
+            )
+            self.pid = 12345
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(jobs.subprocess, "Popen", FakePopen)
+    with pytest.raises(ValueError, match="验收记录"):
+        runner.submit(
+            "sample",
+            "hf-verify",
+            {"publication_job_id": source_id, "repo_id": "other/repo"},
+        )
+    submitted = runner.submit("sample", "hf-verify", {"publication_job_id": source_id})
+    for _ in range(100):
+        result = runner.get(submitted["job_id"])
+        if result["status"] not in {"PENDING", "RUNNING"}:
+            break
+        time.sleep(0.01)
+    assert result["status"] == "WARNING"
+    assert result["summary"]["publish"]["commit_sha"] == "b" * 40
+
+
 def test_validation_dry_run_and_publish_gates(
     config: UIConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:

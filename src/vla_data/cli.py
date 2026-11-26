@@ -259,6 +259,17 @@ def parser() -> argparse.ArgumentParser:
     publish.add_argument("--revision")
     publish.add_argument("--cache-dir", type=Path)
     publish.add_argument(
+        "--verification-mode",
+        choices=("listing", "full", "auto"),
+        default="listing",
+        help="default: HF hashes and metadata; full opts into downloading",
+    )
+    publish.add_argument(
+        "--retry-verification",
+        metavar="COMMIT_SHA",
+        help="resume recorded verification without uploading",
+    )
+    publish.add_argument(
         "--force",
         action="store_true",
         help="conservative retry flag; never duplicates episodes or deletes unknown files",
@@ -325,7 +336,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "publish-hf":
             import json
 
-            from vla_data.publish import publish_dataset, validate_remote
+            from vla_data.publish import (
+                publish_dataset,
+                retry_verification,
+                validate_remote,
+            )
+
+            if args.retry_verification is not None:
+                if args.revision or args.dry_run or args.force or args.cache_dir:
+                    raise ValueError(
+                        "--retry-verification cannot be combined with revision/dry-run/force/cache-dir"
+                    )
+                result = retry_verification(
+                    args.repo_id,
+                    args.retry_verification,
+                    hf_python=str(args.hf_python) if args.hf_python else None,
+                    lerobot_python=str(args.lerobot_python),
+                )
+                print(json.dumps(result, indent=2))
+                return 0 if result["action"] == "UPLOADED" else 3
 
             if args.revision is not None:
                 if args.dry_run or args.force:
@@ -353,6 +382,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 dry_run=args.dry_run,
                 force=args.force,
                 verification_cache_dir=args.cache_dir,
+                verification_mode=args.verification_mode,
             )
             print(
                 f"Repo        {evidence['repo_id']} "
@@ -385,6 +415,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"Reason      {evidence['reason']}")
             if evidence["action"] == "BLOCKED":
                 return 2
+            if evidence["action"] == "UPLOADED_VERIFICATION_PENDING":
+                print(
+                    f"Commit      {evidence['commit_sha']} (uploaded; verification pending)"
+                )
+                print(f"Retry       --retry-verification {evidence['commit_sha']}")
+                return 3
             if evidence["action"] == "UPLOADED":
                 print(f"Commit      {evidence['commit_sha']}")
                 print(f"LeRobot tag {evidence['codebase_tag']}")
@@ -395,6 +431,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.dry_run or evidence["action"] != "UPLOADED":
                 return 0
             validation = evidence["remote_validation"]
+            if validation.get("mode") == "listing":
+                counts = validation["remote_summary"]
+                print(
+                    "Remote validation PASS (HF hashes and metadata; no payload download)"
+                )
+                print(f"  revision  {validation['revision']}")
+                print(
+                    f"  HF counts episodes={counts['total_episodes']} frames={counts['total_frames']}"
+                )
+                print(
+                    f"  hash      {validation['canonical_file_count']} canonical files, 0 mismatches"
+                )
+                return 0
             lerobot = validation["lerobot"]
             print("Remote validation PASS")
             print(f"  revision  {validation['revision']}")

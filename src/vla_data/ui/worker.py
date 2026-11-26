@@ -8,7 +8,7 @@ from pathlib import Path
 
 from vla_data.batch.runner import build_curated_dataset, quality_dataset
 from vla_data.export import export_lerobot, validate_lerobot_export
-from vla_data.publish import publish_dataset
+from vla_data.publish import publish_dataset, retry_verification
 from vla_data.publish.remote import hf_call
 
 
@@ -131,9 +131,19 @@ def execute(request: dict) -> dict:
             request["repo_id"],
             hf_python=request["hf_python"],
             lerobot_python=request["lerobot_python"],
+            progress=lambda message: emit("log", {"message": message}),
         )
-        if result["action"] != "UPLOADED":
+        if result["action"] not in {"UPLOADED", "UPLOADED_VERIFICATION_PENDING"}:
             raise RuntimeError("发布未产生新 revision：" + result["action"])
+        return {"publish": result}
+    if stage == "hf-verify":
+        result = retry_verification(
+            request["repo_id"],
+            request["revision"],
+            hf_python=request["hf_python"],
+            lerobot_python=request["lerobot_python"],
+            progress=lambda message: emit("log", {"message": message}),
+        )
         return {"publish": result}
     raise ValueError("未知的 UI job stage")
 

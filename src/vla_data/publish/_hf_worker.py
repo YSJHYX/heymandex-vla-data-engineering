@@ -43,6 +43,8 @@ def dispatch(mode: str, request: dict) -> dict:
         return download(request["repo_id"], request["revision"], request["cache_dir"])
     if mode == "verify_files":
         return verify_files(request["repo_id"], request["revision"], request["files"])
+    if mode == "dataset_summary":
+        return dataset_summary(request["repo_id"], request["revision"])
     raise ValueError(f"unknown hf worker mode {mode!r}")
 
 
@@ -147,6 +149,31 @@ def download(repo_id: str, revision: str, cache_dir: str) -> dict:
         cache_dir=cache_dir,
     )
     return {"snapshot_path": path, "resolved_sha": info.sha, "private": info.private}
+
+
+def dataset_summary(repo_id: str, revision: str) -> dict:
+    """Read counts from pinned HF metadata without downloading training payloads."""
+    from pathlib import Path
+
+    from huggingface_hub import HfApi, hf_hub_download
+
+    info = HfApi().repo_info(repo_id=repo_id, repo_type="dataset", revision=revision)
+    if info.sha != revision:
+        raise ValueError("pinned revision could not be verified")
+    path = hf_hub_download(
+        repo_id=repo_id,
+        repo_type="dataset",
+        filename="meta/info.json",
+        revision=revision,
+    )
+    metadata = json.loads(Path(path).read_text())
+    return {
+        "resolved_sha": info.sha,
+        **{
+            key: metadata.get(key)
+            for key in ("total_episodes", "total_frames", "total_videos")
+        },
+    }
 
 
 def verify_files(repo_id: str, revision: str, files: list) -> dict:

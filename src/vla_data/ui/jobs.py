@@ -25,6 +25,7 @@ STAGES = {
     "validate",
     "hf-dry-run",
     "hf-publish",
+    "hf-verify",
 }
 MUTATING = {"clean", "curate", "quality", "export", "hf-publish"}
 TOKEN = re.compile(r"hf_[A-Za-z0-9]{10,}")
@@ -199,6 +200,21 @@ class PipelineJobRunner:
             ):
                 raise ValueError("请先对当前 LeRobot 导出执行本地验证")
         baseline_sha = None
+        revision = None
+        if stage == "hf-verify":
+            previous = self.get(str(params.get("publication_job_id", "")))
+            publication = ((previous or {}).get("summary") or {}).get("publish", {})
+            if (
+                previous is None
+                or previous["run_name"] != run_name
+                or previous["stage"] not in {"hf-publish", "hf-verify"}
+                or previous["context"].get("repo_id") != repo_id
+                or publication.get("repo_id") != repo_id
+                or publication.get("action") != "UPLOADED_VERIFICATION_PENDING"
+                or not re.fullmatch(r"[0-9a-f]{40}", publication.get("commit_sha", ""))
+            ):
+                raise ValueError("没有可重试的已上传验收记录")
+            revision = publication["commit_sha"]
         if stage == "hf-publish":
             if params.get("confirmation") != "我已检查 Dry Run 结果":
                 raise ValueError("正式上传需要确认 Dry Run 结果")
@@ -257,6 +273,7 @@ class PipelineJobRunner:
             "lerobot_python": str(self.config.lerobot_python),
             "hf_python": str(self.config.hf_python),
             "baseline_sha": baseline_sha,
+            "revision": revision,
         }
         context = {"fingerprints": fingerprint, "repo_id": repo_id}
         if frame_json_root is not None:
@@ -378,6 +395,9 @@ class PipelineJobRunner:
                         context["fingerprints"] = self._fingerprints(export_root)
                         self._update(job_id, context=json.dumps(context))
                     warning = (
+                        (output or {}).get("publish", {}).get("action")
+                        == "UPLOADED_VERIFICATION_PENDING"
+                    ) or (
                         request["stage"] in {"clean", "quality"}
                         and (output or {})
                         .get("d3", {})

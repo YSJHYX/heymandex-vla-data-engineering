@@ -14,6 +14,7 @@ from vla_data.publish.publisher import (
     RemotePrivacyError,
     RemoteValidationError,
     publish_dataset,
+    retry_verification,
     validate_remote,
 )
 from vla_data.publish.remote import HFWorkerError, hf_call
@@ -30,6 +31,7 @@ __all__ = [
     "build_readme",
     "hf_call",
     "publish_dataset",
+    "retry_verification",
     "validate_dataset_root",
     "validate_remote",
     "validate_repo_id",

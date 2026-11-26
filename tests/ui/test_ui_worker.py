@@ -147,3 +147,25 @@ def test_frame_json_failure_is_not_reported_as_success(worker_request, monkeypat
     monkeypatch.setattr(worker, "export_lerobot", fail)
     with pytest.raises(ValueError, match="shorter"):
         worker.execute(worker_request)
+
+
+def test_retry_verification_never_calls_upload(worker_request, monkeypatch):
+    worker_request.update(stage="hf-verify", revision="b" * 40)
+    calls = []
+    monkeypatch.setattr(
+        worker, "publish_dataset", lambda *a, **k: pytest.fail("upload invoked")
+    )
+    monkeypatch.setattr(
+        worker,
+        "hf_call",
+        lambda *a, **k: pytest.fail("HEAD must not gate pinned retry"),
+    )
+
+    def retry(repo, sha, **kwargs):
+        calls.append((repo, sha))
+        return {"action": "UPLOADED_VERIFICATION_PENDING", "commit_sha": sha}
+
+    monkeypatch.setattr(worker, "retry_verification", retry)
+    result = worker.execute(worker_request)
+    assert result["publish"]["commit_sha"] == "b" * 40
+    assert calls == [(worker_request["repo_id"], "b" * 40)]

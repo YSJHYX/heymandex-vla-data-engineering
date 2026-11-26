@@ -7,6 +7,30 @@ from contextlib import nullcontext
 from vla_data.publish import remote
 
 
+def test_download_timeout_is_configurable_and_does_not_leak_stderr(monkeypatch):
+    import subprocess
+
+    import pytest
+
+    observed = []
+
+    def timeout(*args, **kwargs):
+        observed.append(kwargs["timeout"])
+        raise subprocess.TimeoutExpired(
+            args[0], kwargs["timeout"], stderr="signed-credential"
+        )
+
+    monkeypatch.setattr(remote.subprocess, "run", timeout)
+    monkeypatch.setenv("VLA_HF_DOWNLOAD_TIMEOUT_SECONDS", "12345")
+    with pytest.raises(remote.HFWorkerError, match="download exceeded 12345") as exc:
+        remote.hf_call("download", {})
+    assert "signed-credential" not in str(exc.value)
+    monkeypatch.delenv("VLA_HF_DOWNLOAD_TIMEOUT_SECONDS")
+    with pytest.raises(remote.HFWorkerError):
+        remote.hf_call("download", {})
+    assert observed == [12345, 43200]
+
+
 def test_unavailable_loopback_proxy_is_removed(monkeypatch) -> None:
     def unavailable(*_args, **_kwargs):
         raise ConnectionRefusedError
